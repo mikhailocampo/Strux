@@ -1,0 +1,70 @@
+[project]
+name = "strux"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Mikhail", email = "mikkho.ocampo@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2.3",
+    "psycopg2-binary>=2.9.10",
+    "pydantic>=2.10.4",
+    "sqlalchemy>=2.0.36",
+    "tqdm>=4.67.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "isort>=5.13.2",
+    "pytest-mock>=3.14.0",
+    "pytest>=8.3.4",
+]
+lint = [
+    "ruff>=0.8.4",
+]
+
+[tool.ruff]
+# Target Python version
+target-version = "py310"
+
+# Include directories to check
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Enable all rules by default
+select = ["ALL"]
+
+# Ignore specific rules
+ignore = [
+    "D100",     # Missing docstring in public module
+    "D104",     # Missing docstring in public package
+    "D203",     # one-blank-line-before-class (incompatible with D211)
+    "D213",     # multi-line-summary-second-line (incompatible with D212)
+    "COM812",   # missing-trailing-comma (conflicts with formatter)
+    "ISC001",   # single-line-implicit-string-concatenation (conflicts with formatter)
+    "S101",     # assertion-site (conflicts with pytest)
+    "SLF001",   # Allow private member access in tests
+    "PLR2004",  # Allow magic numbers in tests
+    "EM102",    # Allow f-string literals in Exception messages
+]
+
+[tool.ruff.format]
+# Use double quotes for strings
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D103"]  # Missing docstring in public function
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/strux"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/strux/py.typed" = "strux/py.typed"
