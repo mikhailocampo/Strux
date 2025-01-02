@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Callable
-from typing import Any, Generic, TypeVar, Union, get_args, get_origin
+from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
 
 import pandas as pd
 import sqlalchemy
@@ -54,32 +54,32 @@ class DataSource(Generic[T]):
 
 class PostgresDataSource(DataSource[T]):
     """PostgreSQL data source with JSON support and schema validation.
-    
-    This class is a wrapper around the SQLAlchemy library and provides a convenient interface for loading data from a PostgreSQL database.
-    
+
+    This class is a wrapper around the SQLAlchemy library for loading data from a PostgreSQL database.
+
     It supports automatic JSON column detection, field transformations, and schema validation.
-    
+
     Example usage:
-    
+
     ```python
     from strux.data_loading import PostgresDataSource
     from pydantic import BaseModel
-    
+
     class MyModel(BaseModel):
         id: int
         name: str
-    
+
     data_source = PostgresDataSource.from_postgres(
         schema=MyModel,
         query="SELECT id, name FROM my_table",
         connection_params={"host": "localhost", "database": "my_db", "user": "my_user", "password": "my_password"},
     )
     ```
-    
+
     This will load data from the `my_table` table into a pandas DataFrame and validate it against the `MyModel` schema.
     """
 
-    DESTRUCTIVE_KEYWORDS: set[str] = {
+    DESTRUCTIVE_KEYWORDS: ClassVar[set[str]] = {
         "DROP",
         "DELETE",
         "TRUNCATE",
@@ -132,21 +132,11 @@ class PostgresDataSource(DataSource[T]):
             if field_name not in self.json_columns:
                 # Check if field type suggests JSON (List, Dict, or BaseModel)
                 origin = get_origin(field.annotation)
-                if origin in (list, dict) or issubclass(
-                    get_args(field.annotation)[0], BaseModel
-                ):
+                if origin in (list, dict) or issubclass(get_args(field.annotation)[0], BaseModel):
                     self.json_columns[field_name] = field.annotation
 
-    def _transform_json_column(self, data: Any, target_type: type) -> Union[dict, list, BaseModel]:
-        """Transform JSON data into the target type.
-        
-        Args:
-            data: Raw data from the database expected as JSON string
-            target_type: The expected type of the data e.g, List[ChatMessage], dict, or BaseModel
-
-        Returns:
-            The transformed data
-        """
+    def _transform_json_column(self, data: Any, target_type: type) -> Any:
+        """Transform JSON data into the target type."""
         if data is None:
             return None
 
@@ -157,7 +147,7 @@ class PostgresDataSource(DataSource[T]):
             try:
                 json_data = json.loads(data)
             except (TypeError, json.JSONDecodeError) as e:
-                raise ValueError(f"Failed to parse JSON data: {str(e)}\nData: {data}")
+                raise ValueError(f"Failed to parse JSON data: {e!s}\nData: {data}")
 
         # Handle different target types
         origin = get_origin(target_type)
@@ -166,18 +156,14 @@ class PostgresDataSource(DataSource[T]):
             item_type = get_args(target_type)[0]
             if not isinstance(json_data, list):
                 raise ValueError(f"Expected list but got {type(json_data)}")
-            
-            return [
-                self._transform_single_value(item, item_type)
-                for item in json_data
-            ]
-        elif origin is None:
+
+            return [self._transform_single_value(item, item_type) for item in json_data]
+        if origin is None:
             # Handle non-generic types (dict, BaseModel, etc)
             return self._transform_single_value(json_data, target_type)
-        else:
-            raise ValueError(f"Unsupported type: {target_type}")
+        raise ValueError(f"Unsupported type: {target_type}")
 
-    def _transform_single_value(self, data: Any, target_type: type) -> Union[dict, BaseModel]:
+    def _transform_single_value(self, data: Any, target_type: type) -> dict | BaseModel:
         """Transform a single value into the target type."""
         if target_type == dict:
             return data
@@ -205,10 +191,7 @@ class PostgresDataSource(DataSource[T]):
                 "?sslmode=require"
             )
 
-        return (
-            f"postgresql://{params['user']}:{params['password']}"
-            f"@{host}:{port}/{params['database']}"
-        )
+        return f"postgresql://{params['user']}:{params['password']}" f"@{host}:{port}/{params['database']}"
 
     def _is_destructive_query(self, query: str) -> bool:
         """Check if the query contains destructive SQL operations."""
@@ -232,9 +215,7 @@ class PostgresDataSource(DataSource[T]):
                 # Handle JSON columns first
                 for col_name, target_type in self.json_columns.items():
                     if col_name in df.columns:
-                        df[col_name] = df[col_name].apply(
-                            lambda x: self._transform_json_column(x, target_type)
-                        )
+                        df[col_name] = df[col_name].apply(lambda x: self._transform_json_column(x, target_type))
 
                 # Then handle any custom transformations
                 transformed_data = {}
@@ -246,8 +227,7 @@ class PostgresDataSource(DataSource[T]):
                         transformed_data[field_name] = transform_fn(df)
                     else:
                         raise ValueError(
-                            f"No mapping found for field '{field_name}'. "
-                            f"Available columns: {list(df.columns)}"
+                            f"No mapping found for field '{field_name}'. " f"Available columns: {list(df.columns)}"
                         )
 
                 return pd.DataFrame(transformed_data)

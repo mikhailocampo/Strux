@@ -1,6 +1,8 @@
 """Step abstraction for pipeline processing representing the smallest single unit of work."""
 
-from typing import Any, Callable, Generic, TypeVar
+from collections.abc import Callable
+from typing import Any, Generic, TypeVar
+
 from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
@@ -8,8 +10,7 @@ U = TypeVar("U", bound=BaseModel)
 
 
 class Step(Generic[T, U]):
-    """
-    Represents a single inference step in a pipeline.
+    """Represents a single inference step in a pipeline.
 
     Generic Parameters:
         T: Input type (must be a pydantic model)
@@ -34,6 +35,7 @@ class Step(Generic[T, U]):
             output_schema: The schema of the output data.
             description: A description of the step.
             arg_mapper: An optional function to map the input data to the arguments of the inference function.
+
         """
         self.name = name
         self.inference_fn = inference_fn
@@ -43,8 +45,7 @@ class Step(Generic[T, U]):
         self.arg_mapper = arg_mapper
 
     def run(self, input_data: Any) -> U:
-        """
-        Execute the step's inference function with validation.
+        """Execute the step's inference function with validation.
 
         Args:
             input_data: Input data to process
@@ -54,6 +55,7 @@ class Step(Generic[T, U]):
 
         Raises:
             ValidationError: If input or output validation fails.
+
         """
         # Validate input
         validated_input = self.input_schema.model_validate(input_data)
