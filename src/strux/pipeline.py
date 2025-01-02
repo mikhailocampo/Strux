@@ -8,7 +8,7 @@ import pandas as pd
 from pydantic import BaseModel
 
 from strux.data_loading import DataSource
-from strux.configs import RegressionConfig, ValidationLevel
+from strux.configs import RegressionConfig
 from strux.results import FieldValidation, RegressionResults, StepValidation, ValidationStatus
 from strux.step import Step
 
@@ -102,7 +102,9 @@ class Pipeline(ABC, Generic[T]):
 
     def _generate_run_id(self) -> str:
         """Generate a unique run ID for the pipeline."""
-        return f"{self.data_source.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        source_name = self.data_source.__class__.__name__
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        return f"{source_name}_{timestamp}"
 
     @abstractmethod
     def run(self) -> RegressionResults[T]:
@@ -166,11 +168,11 @@ class Sequential(Pipeline[T]):
             config=config,
             **kwargs,
         )
-        prev_schema = None
+        prev_schema = data_source.schema
         for name, fn, schema in steps:
             pipeline.add_step(
                 inference_fn=fn,
-                input_schema=prev_schema or pipeline.data_source.schema,
+                input_schema=prev_schema,
                 output_schema=schema,
                 name=name,
             )
@@ -191,38 +193,41 @@ class Sequential(Pipeline[T]):
                     f"'{next_step.name}' ({next_step.input_schema.__name__})"
                 )
 
-    def run(self) -> RegressionResults[T]:
-        """Execute all steps in sequence and return results."""
+    def run(self, baseline_path: str | None = None) -> RegressionResults[T]:
+        """Run the pipeline with optional baseline comparison.
+        
+        Args:
+            baseline_path: Optional path to baseline results
+        """
         super().run()  # Validate built status
 
+        # Load data and run inference
         df = self.data_source.load_as_df()
         step_validations = []
 
         for _, row in df.iterrows():
-            current_data = row.to_dict()  # Convert Series to dict
+            current_data = row.to_dict()
             for step in self._steps:
                 output_data = step.run(current_data)
-                current_data = output_data.model_dump()  # Convert Pydantic model to dict
+                current_data = output_data.model_dump()
 
                 # Validate outputs against config
                 field_validations = []
                 for field_name, field_config in self.config.field_configs.items():
                     if field_name in output_data.model_dump():
+                        # For first run (no baseline), we should PASS if the field exists
+                        is_first_run = baseline_path is None
+                        current_value = output_data.model_dump()[field_name]
+                        
                         validation = FieldValidation(
-                        field_name=field_name,
-                        baseline_value=None,
-                        current_value=output_data.model_dump()[field_name],
-                        score=field_config.strategy.compare(
-                            None, output_data.model_dump()[field_name]
-                        ),
-                        threshold=field_config.threshold,
-                        level=field_config.level,
-                        status=ValidationStatus.PASSED if field_config.level == ValidationLevel.IGNORE 
-                            else ValidationStatus.PASSED if field_config.strategy.compare(
-                                None, output_data.model_dump()[field_name]
-                            ) >= (field_config.threshold or 1.0)
-                            else ValidationStatus.FAILED,
-                        details={},
+                            field_name=field_name,
+                            baseline_value=None,  # Will be populated later if baseline exists
+                            current_value=current_value,
+                            score=1.0 if is_first_run else 0.0,  # Pass on first run
+                            threshold=field_config.threshold,
+                            level=field_config.level,
+                            status=ValidationStatus.PASSED if is_first_run else ValidationStatus.FAILED,
+                            details={"is_first_run": is_first_run}
                         )
                         field_validations.append(validation)
 
@@ -230,13 +235,28 @@ class Sequential(Pipeline[T]):
                     StepValidation(
                         step_name=step.name,
                         field_validations=field_validations,
-                        metadata={},
+                        metadata={"is_first_run": baseline_path is None}
                     )
                 )
 
-        return RegressionResults(
+        results = RegressionResults(
             run_id=self._generate_run_id(),
             timestamp=datetime.now(),
             config=self.config,
             step_validations=step_validations,
         )
+
+        # If we have a baseline, compare against it
+        if baseline_path:
+            try:
+                baseline = RegressionResults.load_baseline(
+                    baseline_path,
+                    target_schema=self.config.target_schema
+                )
+                print(f"Loaded baseline from: {baseline_path}")
+                results = results.compare_with(baseline)
+            except FileNotFoundError:
+                print(f"Warning: No baseline found at {baseline_path}")
+                print("Running without baseline comparison")
+            
+        return results

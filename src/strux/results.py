@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from strux.configs import RegressionConfig, ValidationLevel
+from strux.configs import FieldConfig, RegressionConfig, ValidationLevel
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -156,35 +156,48 @@ class RegressionResults(BaseModel, Generic[T]):
             baseline: Previous run to compare against
 
         Returns:
-            New RegressionResults containing only the differences
+            New RegressionResults containing the differences
         """
         diff_validations = []
 
         for current_step in self.step_validations:
-            baseline_step = baseline.get_step_validation(current_step.step_name)
+            baseline_step = baseline.get_step_validations(current_step.step_name)
             if not baseline_step:
                 continue
 
             # Compare field validations
-            diff_fields = []
+            field_validations = []
             for current_field in current_step.field_validations:
                 baseline_field = next(
-                    (
-                        f
-                        for f in baseline_step.field_validations
-                        if f.field_name == current_field.field_name
-                    ),
-                    None,
+                    (f for f in baseline_step.field_validations 
+                     if f.field_name == current_field.field_name),
+                    None
                 )
-                if baseline_field and current_field.score != baseline_field.score:
-                    diff_fields.append(current_field)
+                
+                if baseline_field:
+                    # Use the strategy from config to compare values
+                    strategy = self.config.field_configs[current_field.field_name].strategy
+                    score = strategy.compare(baseline_field.current_value, current_field.current_value)
+                    
+                    validation = FieldValidation(
+                        field_name=current_field.field_name,
+                        baseline_value=baseline_field.current_value,  # Use the baseline's current value
+                        current_value=current_field.current_value,
+                        score=score,
+                        threshold=current_field.threshold,
+                        level=current_field.level,
+                        status=ValidationStatus.PASSED if score >= (current_field.threshold or 1.0) 
+                               else ValidationStatus.FAILED,
+                        details={"compared_with": baseline.run_id}
+                    )
+                    field_validations.append(validation)
 
-            if diff_fields:
+            if field_validations:
                 diff_validations.append(
                     StepValidation(
                         step_name=current_step.step_name,
-                        field_validations=diff_fields,
-                        metadata={"compared_with": baseline.run_id},
+                        field_validations=field_validations,
+                        metadata={"compared_with": baseline.run_id}
                     )
                 )
 
@@ -196,7 +209,7 @@ class RegressionResults(BaseModel, Generic[T]):
             metadata={
                 "baseline_run_id": baseline.run_id,
                 "current_run_id": self.run_id,
-            },
+            }
         )
 
     def export(self, path: str) -> None:
@@ -206,16 +219,26 @@ class RegressionResults(BaseModel, Generic[T]):
             path: Where to save the results
         """
         output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
 
         # Convert to serializable format
         data = {
             "run_id": self.run_id,
             "timestamp": self.timestamp.isoformat(),
-            "config": self.config.model_dump(),
+            "config": {
+                "target_schema": self.config.target_schema.__name__,
+                "field_configs": {
+                    name: {
+                        "threshold": config.threshold,
+                        "level": config.level.value,
+                        "strategy": config.strategy.__class__.__name__ if config.strategy else None
+                    }
+                    for name, config in self.config.field_configs.items()
+                }
+            },
             "steps": [
                 {
                     "name": step.step_name,
-                    "status": step.status,
                     "validations": [
                         {
                             "field": v.field_name,
@@ -236,3 +259,64 @@ class RegressionResults(BaseModel, Generic[T]):
         }
 
         output_path.write_text(json.dumps(data, indent=2))
+
+    @classmethod
+    def load_baseline(cls, path: str, target_schema: type[T]) -> "RegressionResults[T]":
+        """Load baseline results from a file.
+        
+        Args:
+            path: Path to the baseline results file
+            target_schema: The schema class used for validation
+        """
+        baseline_path = Path(path)
+        if not baseline_path.exists():
+            raise FileNotFoundError(f"No baseline found at {path}")
+            
+        data = json.loads(baseline_path.read_text())
+        
+        # Reconstruct field validations
+        step_validations = []
+        for step in data["steps"]:
+            field_validations = [
+                FieldValidation(
+                    field_name=v["field"],
+                    baseline_value=v["baseline"],
+                    current_value=v["current"],
+                    score=v["score"],
+                    threshold=v["threshold"],
+                    level=ValidationLevel(v.get("level", "strict")),
+                    status=ValidationStatus(v.get("status", "failed")),
+                    details=v.get("details", {})
+                )
+                for v in step["validations"]
+            ]
+            
+            step_validations.append(StepValidation(
+                step_name=step["name"],
+                field_validations=field_validations,
+                metadata=step.get("metadata", {})
+            ))
+        
+        # Create config with actual schema class
+        config = RegressionConfig(
+            target_schema=target_schema,
+            field_configs={
+                name: FieldConfig(**cfg)
+                for name, cfg in data["config"]["field_configs"].items()
+            }
+        )
+        
+        return cls(
+            run_id=data["run_id"],
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+            config=config,
+            step_validations=step_validations,
+            metadata=data.get("metadata", {})
+        )
+
+    def save_as_baseline(self, path: str) -> None:
+        """Save these results as a baseline for future comparisons."""
+        self.export(path)
+        print(f"\nBaseline saved to: {path}")
+        print("Use this baseline in future runs with:")
+        print(f"pipeline.run(baseline_path='{path}')")
