@@ -1,7 +1,7 @@
 [project]
 name = "strux"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.1.1"
+description = "Strux is a Python framework for structured outputs model versioning"
 readme = "README.md"
 authors = [
     { name = "Mikhail", email = "mikkho.ocampo@gmail.com" }
@@ -21,6 +21,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "ipykernel>=6.29.5",
     "isort>=5.13.2",
     "pytest-mock>=3.14.0",
     "pytest>=8.3.4",
@@ -32,6 +33,7 @@ lint = [
 [tool.ruff]
 # Target Python version
 target-version = "py310"
+line-length = 120
 
 # Include directories to check
 src = ["src", "tests"]

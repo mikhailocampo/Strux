@@ -1,14 +1,14 @@
 """Pipeline for running regression tests on model outputs."""
 
-from datetime import datetime
-from typing import Any, Callable, Generic, List, TypeVar
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from datetime import datetime, timezone
+from typing import Any, Generic, TypeVar
 
-import pandas as pd
 from pydantic import BaseModel
 
-from strux.data_loading import DataSource
 from strux.configs import RegressionConfig
+from strux.data_loading import DataSource
 from strux.results import FieldValidation, RegressionResults, StepValidation, ValidationStatus
 from strux.step import Step
 
@@ -34,6 +34,7 @@ class Pipeline(ABC, Generic[T]):
             config: The configuration for the regression testing.
             batch_size: The number of samples to process in each batch.
             baseline_run_id: The ID of the baseline run to compare against.
+
         """
         self.data_source = data_source
         self.config = config
@@ -44,12 +45,12 @@ class Pipeline(ABC, Generic[T]):
 
     def add_step(
         self,
-        inference_fn: Callable[[Any], Any],
+        inference_fn: Callable[..., Any],
         input_schema: type[T],
         output_schema: type[U],
         name: str | None = None,
         description: str | None = None,
-        arg_mapper: Callable[[T], dict] | None = None,
+        arg_mapper: Callable[[T], dict[str, Any]] | None = None,
     ) -> "Pipeline[T]":
         """Add a step to the pipeline.
 
@@ -60,6 +61,7 @@ class Pipeline(ABC, Generic[T]):
             name: The name of the step.
             description: The description of the step.
             arg_mapper: An optional function to map the input data to the arguments of the inference function.
+
         """
         if self._built:
             raise ValueError("Cannot add steps after pipeline is built.")
@@ -81,8 +83,8 @@ class Pipeline(ABC, Generic[T]):
 
         Raises:
             ValueError: If step input/output schemas are incompatible.
+
         """
-        pass
 
     def build(self) -> "Pipeline[T]":
         """Validate and finalize pipeline configuration.
@@ -92,6 +94,7 @@ class Pipeline(ABC, Generic[T]):
 
         Raises:
             ValueError: If pipeline configuration is invalid or already built.
+
         """
         if not self._steps:
             raise ValueError("Pipeline must have at least one step.")
@@ -103,15 +106,16 @@ class Pipeline(ABC, Generic[T]):
     def _generate_run_id(self) -> str:
         """Generate a unique run ID for the pipeline."""
         source_name = self.data_source.__class__.__name__
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return f"{source_name}_{timestamp}"
 
     @abstractmethod
     def run(self) -> RegressionResults[T]:
-        """Run the pipeline and return results
+        """Run the pipeline and return results.
 
         Raises:
             RuntimeError: If pipeline hadn't been built.
+
         """
         if not self._built:
             raise RuntimeError("Pipeline must be built before running.")
@@ -136,6 +140,7 @@ class Sequential(Pipeline[T]):
             config: The configuration for the regression testing.
             batch_size: The number of samples to process in each batch.
             baseline_run_id: The ID of the baseline run to compare against.
+
         """
         super().__init__(
             data_source=data_source,
@@ -143,14 +148,14 @@ class Sequential(Pipeline[T]):
             batch_size=batch_size,
             baseline_run_id=baseline_run_id,
         )
-    
+
     @classmethod
     def from_steps(
         cls,
         data_source: DataSource,
         steps: list[tuple[str, Callable, type[BaseModel]]],
         config: RegressionConfig[T],
-        **kwargs: Any,
+        **kwargs: dict[str, Any],
     ) -> "Sequential[T]":
         """Create a pipeline from a list of steps.
 
@@ -162,6 +167,7 @@ class Sequential(Pipeline[T]):
 
         Returns:
             A new pipeline instance.
+
         """
         pipeline = cls(
             data_source=data_source,
@@ -195,17 +201,18 @@ class Sequential(Pipeline[T]):
 
     def run(self, baseline_path: str | None = None) -> RegressionResults[T]:
         """Run the pipeline with optional baseline comparison.
-        
+
         Args:
             baseline_path: Optional path to baseline results
+
         """
         super().run()  # Validate built status
 
         # Load data and run inference
-        df = self.data_source.load_as_df()
+        df_data = self.data_source.load_as_df()
         step_validations = []
 
-        for _, row in df.iterrows():
+        for _, row in df_data.iterrows():
             current_data = row.to_dict()
             for step in self._steps:
                 output_data = step.run(current_data)
@@ -218,7 +225,7 @@ class Sequential(Pipeline[T]):
                         # For first run (no baseline), we should PASS if the field exists
                         is_first_run = baseline_path is None
                         current_value = output_data.model_dump()[field_name]
-                        
+
                         validation = FieldValidation(
                             field_name=field_name,
                             baseline_value=None,  # Will be populated later if baseline exists
@@ -227,7 +234,7 @@ class Sequential(Pipeline[T]):
                             threshold=field_config.threshold,
                             level=field_config.level,
                             status=ValidationStatus.PASSED if is_first_run else ValidationStatus.FAILED,
-                            details={"is_first_run": is_first_run}
+                            details={"is_first_run": is_first_run},
                         )
                         field_validations.append(validation)
 
@@ -235,7 +242,7 @@ class Sequential(Pipeline[T]):
                     StepValidation(
                         step_name=step.name,
                         field_validations=field_validations,
-                        metadata={"is_first_run": baseline_path is None}
+                        metadata={"is_first_run": baseline_path is None},
                     )
                 )
 
@@ -249,14 +256,11 @@ class Sequential(Pipeline[T]):
         # If we have a baseline, compare against it
         if baseline_path:
             try:
-                baseline = RegressionResults.load_baseline(
-                    baseline_path,
-                    target_schema=self.config.target_schema
-                )
+                baseline = RegressionResults.load_baseline(baseline_path, target_schema=self.config.target_schema)
                 print(f"Loaded baseline from: {baseline_path}")
                 results = results.compare_with(baseline)
             except FileNotFoundError:
                 print(f"Warning: No baseline found at {baseline_path}")
                 print("Running without baseline comparison")
-            
+
         return results
