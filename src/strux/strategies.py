@@ -1,14 +1,21 @@
 """Built-in comparison strategies for fields."""
 
-from enum import Enum
+from abc import ABC, abstractmethod
 from typing import Any, TypeVar, get_origin, Union, Sequence
 
-from strux.configs import ComparisonStrategy
 
 T = TypeVar("T")
 Number = Union[int, float]
 Collection = Union[list, set, Sequence]
 
+class ComparisonStrategy(ABC):
+    @abstractmethod
+    def compare(self, baseline: Any, current: Any) -> float:
+        pass
+    
+    @abstractmethod
+    def validate(self, field_type: type) -> bool:
+        pass
 
 class ExactMatch(ComparisonStrategy):
     """Strategy requiring exact matches.
