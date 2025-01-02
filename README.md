@@ -1,8 +1,10 @@
-# Strux
+# Strux: A Python framework for structured output model versioning
 
 Strux is a Python library for building type-safe regression testing pipelines for structured outputs. It enables developers to easily validate model outputs against expected schemas and thresholds with minimal boilerplate.
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/) [![linting - Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff) [![Hatch project](https://img.shields.io/badge/%F0%9F%A5%9A-Hatch-4051b5.svg)](https://github.com/pypa/hatch) ![Static Badge](https://img.shields.io/badge/Pydantic-red?logo=pydantic&label=%20&labelColor=gray&color=%23E92063&link=https%3A%2F%2Fpypi.org%2Fproject%2Fpydantic%2F)
+
+
 
 ## Key Features
 
