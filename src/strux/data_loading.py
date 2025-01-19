@@ -3,11 +3,11 @@
 import json
 import re
 from collections.abc import Callable
-from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin
+from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin, Type, List
 
 import pandas as pd
 import sqlalchemy
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -51,6 +51,32 @@ class DataSource(Generic[T]):
             json_columns=json_columns,
         )
 
+    @classmethod
+    def from_csv(
+        cls,
+        schema: type[T],
+        file_path: str,
+        *,
+        transform: dict[str, Callable] | None = None,
+        json_columns: dict[str, type] | None = None,
+        **pandas_kwargs: Any,
+    ) -> "CSVDataSource[T]":
+        """Create a data source from a CSV file with smart JSON handling.
+        
+        Args:
+            schema: Pydantic model defining the expected data structure
+            file_path: Path to the CSV file
+            transform: Optional field-specific transformations
+            json_columns: Mapping of column names to their expected types for JSON/JSONB columns
+            **pandas_kwargs: Additional keyword arguments for pandas.read_csv
+        """
+        return CSVDataSource(
+            schema=schema,
+            file_path=file_path,
+            field_transformers=transform,
+            json_columns=json_columns,
+            **pandas_kwargs,
+        )
 
 class PostgresDataSource(DataSource[T]):
     """PostgreSQL data source with JSON support and schema validation.
@@ -132,7 +158,12 @@ class PostgresDataSource(DataSource[T]):
             if field_name not in self.json_columns:
                 # Check if field type suggests JSON (List, Dict, or BaseModel)
                 origin = get_origin(field.annotation)
-                if origin in (list, dict) or issubclass(get_args(field.annotation)[0], BaseModel):
+                if origin is None:
+                    continue
+                args = get_args(field.annotation)
+                if not args:  # Skip if no type arguments
+                    continue
+                if origin in (list, dict) or issubclass(args[0], BaseModel):
                     self.json_columns[field_name] = field.annotation
 
     def _transform_json_column(self, data: Any, target_type: type) -> Any:
@@ -234,3 +265,54 @@ class PostgresDataSource(DataSource[T]):
 
         except sqlalchemy.exc.SQLAlchemyError as e:
             raise RuntimeError(DB_ERROR.format(str(e))) from e
+
+
+class CSVDataSource(DataSource[T]):
+    """Data source for CSV files."""
+    
+    def __init__(self, df: pd.DataFrame, schema: Type[T]):
+        """Initialize data source.
+        
+        Args:
+            df: Pandas DataFrame containing the data
+            schema: Pydantic model class for input validation
+        """
+        self._data = df  # Store DataFrame internally
+        self.schema = schema
+    
+    @property
+    def data(self) -> pd.DataFrame:
+        """Get the underlying DataFrame."""
+        return self._data
+    
+    @classmethod
+    def from_csv(cls, schema: Type[T], file_path: str) -> 'CSVDataSource':
+        """Create data source from CSV file.
+        
+        Args:
+            schema: Pydantic model class for input validation
+            file_path: Path to CSV file
+            
+        Returns:
+            CSVDataSource instance
+        """
+        df = pd.read_csv(file_path)
+        return cls(df, schema)
+    
+    def get_batch(self) -> List[T]:
+        """Get all data as a batch of validated models.
+        
+        Returns:
+            List of validated input models
+        """
+        # Convert DataFrame rows to dictionaries
+        records = self.data.to_dict('records')
+        
+        # Create validated models for each row
+        return [
+            self.schema(**{
+                k: v for k, v in record.items() 
+                if k in self.schema.model_fields
+            })
+            for record in records
+        ]

@@ -5,11 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, Dict, Generic, List, Optional, TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from strux.configs import FieldConfig, RegressionConfig, ValidationLevel
+from strux.types import T, MetadataDict
+
+if TYPE_CHECKING:
+    from strux.visualization.report_generator import HTMLReport
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -49,6 +53,8 @@ class StepValidation:
     step_name: str
     field_validations: list[FieldValidation]
     metadata: dict[str, Any]
+    inputs: list[Any]
+    outputs: list[Any]
 
     @property
     def passed(self) -> bool:
@@ -62,6 +68,8 @@ class StepValidation:
     def format_summary(self) -> str:
         """Generate human-readable summary."""
         lines = [f"Step: {self.step_name}"]
+        
+        # Add overall metrics
         for validation in self.field_validations:
             status = "✓" if validation.status == ValidationStatus.PASSED else "✗"
             lines.append(
@@ -69,9 +77,17 @@ class StepValidation:
                 f"score={validation.score:.2f} "
                 f"(threshold={validation.threshold or 1.0})"
             )
-            if validation.status != ValidationStatus.PASSED:
-                lines.append(f"    Baseline: {validation.baseline_value}")
-                lines.append(f"    Current:  {validation.current_value}")
+        
+        # Add individual results
+        lines.append("\nDetailed Results:")
+        for i, (input_val, output_val) in enumerate(zip(self.inputs, self.outputs)):
+            lines.append(f"  Row {i+1}:")
+            lines.append(f"    Input:  {input_val.numbers}")
+            lines.append(f"    Output: {output_val.doubled}")
+            if validation.baseline_value is not None:
+                lines.append(f"    Expected: {validation.baseline_value[i]}")
+            lines.append("")  # Empty line between rows
+            
         return "\n".join(lines)
 
 
@@ -187,6 +203,8 @@ class RegressionResults(BaseModel, Generic[T]):
                         step_name=current_step.step_name,
                         field_validations=field_validations,
                         metadata={"compared_with": baseline.run_id},
+                        inputs=current_step.inputs,
+                        outputs=current_step.outputs,
                     )
                 )
 
@@ -242,6 +260,8 @@ class RegressionResults(BaseModel, Generic[T]):
                         for v in step.field_validations
                     ],
                     "metadata": step.metadata,
+                    "inputs": step.inputs,
+                    "outputs": step.outputs,
                 }
                 for step in self.step_validations
             ],
@@ -284,7 +304,11 @@ class RegressionResults(BaseModel, Generic[T]):
 
             step_validations.append(
                 StepValidation(
-                    step_name=step["name"], field_validations=field_validations, metadata=step.get("metadata", {})
+                    step_name=step["name"],
+                    field_validations=field_validations,
+                    metadata=step.get("metadata", {}),
+                    inputs=step.get("inputs", []),
+                    outputs=step.get("outputs", []),
                 )
             )
 
@@ -308,3 +332,44 @@ class RegressionResults(BaseModel, Generic[T]):
         print(f"\nBaseline saved to: {path}")
         print("Use this baseline in future runs with:")
         print(f"pipeline.run(baseline_path='{path}')")
+
+    def to_html(self, output_path: str | None = None) -> str:
+        """Generate an HTML report of the results."""
+        # Import HTMLReport here to avoid circular import
+        from strux.visualization.report_generator import HTMLReport
+        
+        report = HTMLReport()
+        html = report.generate(self)
+        
+        if output_path:
+            Path(output_path).write_text(html)
+            print(f"\nReport saved to: {output_path}")
+
+        return html
+
+    @property
+    def is_annotation_based(self) -> bool:
+        """Check if this result uses annotations for comparison."""
+        return bool(self.config.annotation_field)
+
+    def get_annotation_field(self) -> str | None:
+        """Get the name of the annotation field if configured."""
+        return self.config.annotation_field
+
+    def get_field_values(self, field_name: str) -> tuple[list[Any], list[Any] | None]:
+        """Get current and annotation values for a field.
+        
+        Returns:
+            Tuple of (current_values, annotation_values)
+        """
+        current_values = []
+        annotation_values = []
+        
+        for step in self.step_validations:
+            for validation in step.field_validations:
+                if validation.field_name == field_name:
+                    current_values.extend(validation.current_value)
+                    if validation.baseline_value is not None:
+                        annotation_values.extend(validation.baseline_value)
+                        
+        return current_values, annotation_values if annotation_values else None

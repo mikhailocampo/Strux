@@ -3,12 +3,13 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, List, Tuple, Type
 
 from pydantic import BaseModel
 
+from strux.batch_processing import BatchProcessor
 from strux.configs import RegressionConfig
-from strux.data_loading import DataSource
+from strux.data_loading import DataSource, CSVDataSource
 from strux.results import FieldValidation, RegressionResults, StepValidation, ValidationStatus
 from strux.step import Step
 
@@ -121,146 +122,108 @@ class Pipeline(ABC, Generic[T]):
             raise RuntimeError("Pipeline must be built before running.")
 
 
-class Sequential(Pipeline[T]):
-    """Pipeline that executes steps in sequence."""
-
+class Sequential:
+    """Sequential pipeline for processing and validating data."""
+    
     def __init__(
         self,
-        data_source: DataSource,
-        config: RegressionConfig[T],
-        *,
-        batch_size: int = 32,
-        baseline_run_id: str | None = None,
-    ) -> None:
-        """Initialize a sequential pipeline.
-
+        data_source: CSVDataSource,
+        config: RegressionConfig,
+        steps: List[Tuple[str, Callable, Type[BaseModel]]] | None = None
+    ):
+        """Initialize pipeline.
+        
         Args:
-            data_source: The data source to load data from.
-            steps: The steps to execute in sequence.
-            config: The configuration for the regression testing.
-            batch_size: The number of samples to process in each batch.
-            baseline_run_id: The ID of the baseline run to compare against.
-
+            data_source: Source of input data
+            config: Configuration for validation
+            steps: List of (name, function, output_schema) tuples
         """
-        super().__init__(
-            data_source=data_source,
-            config=config,
-            batch_size=batch_size,
-            baseline_run_id=baseline_run_id,
-        )
+        self.data_source = data_source
+        self.config = config
+        self.steps = steps or []
 
     @classmethod
     def from_steps(
         cls,
-        data_source: DataSource,
-        steps: list[tuple[str, Callable, type[BaseModel]]],
-        config: RegressionConfig[T],
-        **kwargs: dict[str, Any],
-    ) -> "Sequential[T]":
-        """Create a pipeline from a list of steps.
-
-        Args:
-            data_source: The data source to load data from.
-            steps: List of (name, inference_fn, output_schema) tuples.
-            config: The configuration for the regression testing.
-            **kwargs: Additional keyword arguments for the pipeline.
-
-        Returns:
-            A new pipeline instance.
-
-        """
-        pipeline = cls(
+        data_source: CSVDataSource,
+        steps: List[Tuple[str, Callable, Type[BaseModel]]],
+        config: RegressionConfig
+    ) -> 'Sequential':
+        """Create pipeline from steps."""
+        return cls(
             data_source=data_source,
             config=config,
-            **kwargs,
+            steps=steps
         )
-        prev_schema = data_source.schema
-        for name, fn, schema in steps:
-            pipeline.add_step(
-                inference_fn=fn,
-                input_schema=prev_schema,
-                output_schema=schema,
-                name=name,
+
+    def _validate_batch(self, outputs: List[BaseModel]) -> List[FieldValidation]:
+        """Validate a batch of outputs."""
+        validations = []
+        
+        # Get annotation values if configured
+        annotation_field = self.config.annotation_field
+        annotation_values = (
+            self.data_source.data[annotation_field].tolist()
+            if annotation_field
+            else None
+        )
+        
+        # Validate each configured field
+        for field_name, field_config in self.config.field_configs.items():
+            # Get output values for this field
+            output_values = [getattr(output, field_name) for output in outputs]
+            
+            # Compare with annotations if configured
+            if field_config.compare_with_annotation and annotation_values:
+                score = sum(1 for a, b in zip(output_values, annotation_values) if a == b) / len(output_values)
+                baseline = annotation_values
+            else:
+                score = 1.0  # Default score if no comparison
+                baseline = None
+            
+            # Create validation result
+            validations.append(
+                FieldValidation(
+                    field_name=field_name,
+                    baseline_value=baseline,
+                    current_value=output_values,
+                    score=score,
+                    threshold=field_config.threshold,
+                    level=field_config.level,
+                    status=ValidationStatus.PASSED if score >= (field_config.threshold or 1.0) else ValidationStatus.FAILED,
+                    details={}
+                )
             )
-            prev_schema = schema
+        
+        return validations
 
-        return pipeline.build()
-
-    def _validate_step_connections(self) -> None:
-        """Validate that step input/output schemas are compatible."""
-        for i in range(len(self._steps) - 1):
-            current_step = self._steps[i]
-            next_step = self._steps[i + 1]
-
-            if current_step.output_schema != next_step.input_schema:
-                raise ValueError(
-                    f"Schema mismatch: output of '{current_step.name}' "
-                    f"({current_step.output_schema.__name__}) does not match input of "
-                    f"'{next_step.name}' ({next_step.input_schema.__name__})"
-                )
-
-    def run(self, baseline_path: str | None = None) -> RegressionResults[T]:
-        """Run the pipeline with optional baseline comparison.
-
-        Args:
-            baseline_path: Optional path to baseline results
-
-        """
-        super().run()  # Validate built status
-
-        # Load data and run inference
-        df_data = self.data_source.load_as_df()
-        step_validations = []
-
-        for _, row in df_data.iterrows():
-            current_data = row.to_dict()
-            for step in self._steps:
-                output_data = step.run(current_data)
-                current_data = output_data.model_dump()
-
-                # Validate outputs against config
-                field_validations = []
-                for field_name, field_config in self.config.field_configs.items():
-                    if field_name in output_data.model_dump():
-                        # For first run (no baseline), we should PASS if the field exists
-                        is_first_run = baseline_path is None
-                        current_value = output_data.model_dump()[field_name]
-
-                        validation = FieldValidation(
-                            field_name=field_name,
-                            baseline_value=None,  # Will be populated later if baseline exists
-                            current_value=current_value,
-                            score=1.0 if is_first_run else 0.0,  # Pass on first run
-                            threshold=field_config.threshold,
-                            level=field_config.level,
-                            status=ValidationStatus.PASSED if is_first_run else ValidationStatus.FAILED,
-                            details={"is_first_run": is_first_run},
-                        )
-                        field_validations.append(validation)
-
-                step_validations.append(
+    def run(self) -> RegressionResults:
+        """Run the pipeline on a batch of data."""
+        # Get batch of input data
+        inputs = self.data_source.get_batch()
+        
+        # Process each step
+        for step_name, func, output_schema in self.steps:
+            # Process entire batch
+            outputs = [func(input_data) for input_data in inputs]
+            
+            # Validate outputs
+            validations = self._validate_batch(outputs)
+            
+            # Create results
+            results = RegressionResults(
+                run_id=f"CSVDataSource_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                timestamp=datetime.now(timezone.utc),
+                config=self.config,
+                step_validations=[
                     StepValidation(
-                        step_name=step.name,
-                        field_validations=field_validations,
-                        metadata={"is_first_run": baseline_path is None},
+                        step_name=step_name,
+                        field_validations=validations,
+                        metadata={},
+                        inputs=inputs,
+                        outputs=outputs
                     )
-                )
-
-        results = RegressionResults(
-            run_id=self._generate_run_id(),
-            timestamp=datetime.now(),
-            config=self.config,
-            step_validations=step_validations,
-        )
-
-        # If we have a baseline, compare against it
-        if baseline_path:
-            try:
-                baseline = RegressionResults.load_baseline(baseline_path, target_schema=self.config.target_schema)
-                print(f"Loaded baseline from: {baseline_path}")
-                results = results.compare_with(baseline)
-            except FileNotFoundError:
-                print(f"Warning: No baseline found at {baseline_path}")
-                print("Running without baseline comparison")
-
+                ]
+            )
+        
         return results
