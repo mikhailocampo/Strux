@@ -21,14 +21,15 @@ class FieldConfig(BaseModel):
 
     threshold: float | None = None
     level: ValidationLevel = ValidationLevel.STRICT
-    strategy: Any = None  # ComparisonStrategy instance
+    strategy: Any = None
+    compare_with_annotation: bool = False
 
 
 class RegressionConfig(BaseModel, Generic[T]):
     """Configuration for regression testing."""
-
     target_schema: type[T]
     field_configs: dict[str, FieldConfig] = Field(default_factory=dict)
+    annotation_field: str | None = None
 
     def configure_field(
         self,
@@ -37,10 +38,15 @@ class RegressionConfig(BaseModel, Generic[T]):
         threshold: float | None = None,
         level: ValidationLevel = ValidationLevel.STRICT,
         strategy: Any = None,
+        compare_with_annotation: bool = False,
     ) -> None:
         """Configure validation for a specific field."""
+        if compare_with_annotation and not self.annotation_field:
+            raise ValueError("Must set annotation_field in config to use compare_with_annotation")
+            
         self.field_configs[field_name] = FieldConfig(
             threshold=threshold,
             level=level,
             strategy=strategy,
+            compare_with_annotation=compare_with_annotation,
         )

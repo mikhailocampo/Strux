@@ -1,0 +1,72 @@
+<!-- src/strux/visualization/templates/report.html -->
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Strux Validation Report</title>
+    <style>
+        /* Add minimal styling */
+        .failed {
+            color: red;
+        }
+
+        .passed {
+            color: green;
+        }
+
+        .diff-view {
+            display: none;
+        }
+
+        .expanded .diff-view {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Validation Report</h1>
+
+    <!-- Summary Section -->
+    <div class="summary">
+        <h2>Summary</h2>
+        <p>Run ID: {{ data.summary.run_id }}</p>
+        <p>Status: <span class="{{ data.summary.status.lower() }}">
+                {{ data.summary.status }}
+            </span></p>
+        <p>Total Validations: {{ data.summary.total_validations }}</p>
+        <p>Failed: {{ data.summary.failed_validations }}</p>
+    </div>
+
+    <!-- Results Section -->
+    <div class="results">
+        <h2>Validation Results</h2>
+        {% for step in data.steps %}
+        <div class="step">
+            <h3>{{ step.name }}</h3>
+            {% for validation in step.validations %}
+            <div class="validation {{ validation.status }}">
+                <p>{{ validation.field }}: {{ validation.score }}</p>
+                {% if validation.status != "passed" %}
+                <div class="diff-view">
+                    <p>Baseline: {{ validation.baseline }}</p>
+                    <p>Current: {{ validation.current }}</p>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </div>
+
+    <script>
+        // Add minimal interactivity
+        document.querySelectorAll('.validation').forEach(el => {
+            el.addEventListener('click', () => {
+                el.classList.toggle('expanded');
+            });
+        });
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Strux Validation Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .summary {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .status {
+            font-weight: bold;
+            color: {% if data.summary.status == "PASSED" %}#28a745{% else %}#dc3545{% endif %}
+        }
+        .plot-container {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .metric {
+            background-color: #fff;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        .results-table th, .results-table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        .results-table th {
+            background-color: #f5f5f5;
+        }
+        .results-table tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+    </style>
+</head>
+<body>
+    <div class="summary">
+        <h2>Validation Report</h2>
+        <p>Run ID: {{ data.summary.run_id }}</p>
+        <p>Timestamp: {{ data.summary.timestamp }}</p>
+        <p>Status: <span class="status">{{ data.summary.status }}</span></p>
+        <div class="metrics">
+            <div class="metric">
+                <strong>Total Validations:</strong> {{ data.summary.total_validations }}
+            </div>
+            <div class="metric">
+                <strong>Failed Validations:</strong> {{ data.summary.failed_validations }}
+            </div>
+        </div>
+    </div>
+
+    <div class="plots">
+        {% for field_name, plot in data.plots.items() %}
+        <div class="plot-container">
+            <h3>{{ field_name }} Comparison</h3>
+            <div class="metrics">
+                <div class="metric">
+                    <strong>Score:</strong> {{ "%.2f"|format(data.fields[field_name].score) }}
+                </div>
+                <div class="metric">
+                    <strong>Threshold:</strong> {{ "%.2f"|format(data.fields[field_name].threshold) }}
+                </div>
+            </div>
+            {{ plot | safe }}
+            
+            <h4>Detailed Results</h4>
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>Row</th>
+                        <th>Input</th>
+                        <th>Output</th>
+                        <th>Expected</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for i in range(data.fields[field_name].predictions|length) %}
+                    <tr>
+                        <td>{{ i + 1 }}</td>
+                        <td>{{ data.inputs[i] }}</td>
+                        <td>{{ data.fields[field_name].predictions[i] }}</td>
+                        <td>{{ data.fields[field_name].annotations[i] if data.fields[field_name].annotations else 'N/A' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endfor %}
+    </div>
+</body>
+</html> 
