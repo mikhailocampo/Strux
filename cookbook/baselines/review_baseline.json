@@ -1,0 +1,109 @@
+{
+  "run_id": "run_20250119_202249",
+  "timestamp": "2025-01-20T04:22:49.405001+00:00",
+  "config": {
+    "target_schema": "ReviewAnalysis",
+    "field_configs": {
+      "sentiment": {
+        "threshold": 0.8,
+        "level": "strict",
+        "strategy": "ExactMatch"
+      },
+      "rating": {
+        "threshold": 0.9,
+        "level": "strict",
+        "strategy": "AbsoluteDeviation"
+      }
+    }
+  },
+  "steps": [
+    {
+      "name": "analyze_review_v1",
+      "validations": [
+        {
+          "field": "sentiment",
+          "score": 0.6,
+          "threshold": 0.8,
+          "passed": false,
+          "baseline": [
+            "positive",
+            "negative",
+            "neutral",
+            "positive",
+            "negative"
+          ],
+          "current": [
+            "positive",
+            "negative",
+            "neutral",
+            "neutral",
+            "neutral"
+          ],
+          "details": {}
+        },
+        {
+          "field": "rating",
+          "score": 0.6,
+          "threshold": 0.9,
+          "passed": false,
+          "baseline": [
+            5.0,
+            1.0,
+            3.0,
+            4.5,
+            1.5
+          ],
+          "current": [
+            4.5,
+            1.5,
+            3.0,
+            3.0,
+            3.0
+          ],
+          "details": {}
+        }
+      ],
+      "metadata": {},
+      "inputs": [
+        {
+          "text": "Great product, love it!"
+        },
+        {
+          "text": "Terrible experience, would not recommend"
+        },
+        {
+          "text": "It's okay, nothing special"
+        },
+        {
+          "text": "Amazing quality and service!"
+        },
+        {
+          "text": "Product broke after one use"
+        }
+      ],
+      "outputs": [
+        {
+          "sentiment": "positive",
+          "rating": 4.5
+        },
+        {
+          "sentiment": "negative",
+          "rating": 1.5
+        },
+        {
+          "sentiment": "neutral",
+          "rating": 3.0
+        },
+        {
+          "sentiment": "neutral",
+          "rating": 3.0
+        },
+        {
+          "sentiment": "neutral",
+          "rating": 3.0
+        }
+      ]
+    }
+  ],
+  "metadata": {}
+}

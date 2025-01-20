@@ -10,6 +10,7 @@ from typing import Any, Dict, Generic, List, Optional, TYPE_CHECKING, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from strux.configs import FieldConfig, RegressionConfig, ValidationLevel
+from strux.strategies import ComparisonStrategy, ValidationStrategy
 from strux.types import T, MetadataDict
 
 if TYPE_CHECKING:
@@ -21,8 +22,8 @@ T = TypeVar("T", bound=BaseModel)
 class ValidationStatus(Enum):
     """Status of a validation result."""
 
-    PASSED = "passed"
-    FAILED = "failed"
+    PASSED = "PASSED"
+    FAILED = "FAILED"
     WARNING = "warning"
     SKIPPED = "skipped"
 
@@ -32,18 +33,21 @@ class FieldValidation:
     """Results of validating a single field."""
 
     field_name: str
-    baseline_value: Any
-    current_value: Any
+    current_value: List[Any]
+    baseline_value: Optional[List[Any]]
     score: float
-    threshold: float | None
-    level: ValidationLevel
-    status: ValidationStatus
-    details: dict[str, Any]
+    threshold: float
+    details: Dict[str, Any]
 
     @property
     def passed(self) -> bool:
-        """Check if validation passed."""
-        return self.status in (ValidationStatus.PASSED, ValidationStatus.SKIPPED)
+        """Check if validation passed threshold."""
+        return self.score >= self.threshold
+
+    @property
+    def status(self) -> ValidationStatus:
+        """Get validation status."""
+        return ValidationStatus.PASSED if self.passed else ValidationStatus.FAILED
 
 
 @dataclass
@@ -51,43 +55,45 @@ class StepValidation:
     """Results of validating a single step."""
 
     step_name: str
-    field_validations: list[FieldValidation]
-    metadata: dict[str, Any]
-    inputs: list[Any]
-    outputs: list[Any]
+    field_validations: List[FieldValidation]
+    metadata: Dict[str, Any]
+    inputs: List[Any]
+    outputs: List[Any]
 
     @property
     def passed(self) -> bool:
         """Check if all field validations passed."""
-        return all(v.status == ValidationStatus.PASSED for v in self.field_validations)
+        return all(v.passed for v in self.field_validations)
+
+    @property
+    def status(self) -> ValidationStatus:
+        """Calculate overall status based on field validations."""
+        return ValidationStatus.PASSED if self.passed else ValidationStatus.FAILED
 
     def get_failed_validations(self) -> list[FieldValidation]:
         """Get all failed field validations."""
         return [v for v in self.field_validations if v.status != ValidationStatus.PASSED]
 
     def format_summary(self) -> str:
-        """Generate human-readable summary."""
+        """Format validation results as text summary."""
         lines = [f"Step: {self.step_name}"]
+        lines.append(f"Status: {self.status.value}")
         
-        # Add overall metrics
+        # Format each field validation
         for validation in self.field_validations:
-            status = "✓" if validation.status == ValidationStatus.PASSED else "✗"
-            lines.append(
-                f"  {status} {validation.field_name}: "
-                f"score={validation.score:.2f} "
-                f"(threshold={validation.threshold or 1.0})"
-            )
-        
-        # Add individual results
-        lines.append("\nDetailed Results:")
-        for i, (input_val, output_val) in enumerate(zip(self.inputs, self.outputs)):
-            lines.append(f"  Row {i+1}:")
-            lines.append(f"    Input:  {input_val.numbers}")
-            lines.append(f"    Output: {output_val.doubled}")
-            if validation.baseline_value is not None:
-                lines.append(f"    Expected: {validation.baseline_value[i]}")
-            lines.append("")  # Empty line between rows
+            lines.append(f"\nField: {validation.field_name}")
+            lines.append(f"Score: {validation.score:.2f} (threshold: {validation.threshold})")
             
+            # Show sample of predictions vs annotations
+            for i, (pred, baseline) in enumerate(zip(
+                validation.current_value, 
+                validation.baseline_value or []
+            )):
+                lines.append(f"\n  Row {i+1}:")
+                lines.append(f"    Predicted: {pred}")
+                if baseline:
+                    lines.append(f"    Expected:  {baseline}")
+                
         return "\n".join(lines)
 
 
@@ -99,6 +105,7 @@ class RegressionResults(BaseModel, Generic[T]):
     config: RegressionConfig[T]
     step_validations: list[StepValidation]
     metadata: dict[str, Any] = Field(default_factory=dict)
+    _baseline_results: Optional["RegressionResults[T]"] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -155,69 +162,115 @@ class RegressionResults(BaseModel, Generic[T]):
         return "\n".join(lines)
 
     def compare_with(self, baseline: "RegressionResults[T]") -> "RegressionResults[T]":
-        """Compare current results with a baseline run.
-
-        Args:
-            baseline: Previous run to compare against
-
-        Returns:
-            New RegressionResults containing the differences
-
-        """
+        """Compare current results with a baseline run."""
+        print(f"\nComparing results:")  # Debug
+        print(f"Baseline steps: {[s.step_name for s in baseline.step_validations]}")
+        print(f"Current steps: {[s.step_name for s in self.step_validations]}")
+        
         diff_validations = []
+        current_validations = []
 
-        for current_step in self.step_validations:
-            baseline_step = baseline.get_step_validations(current_step.step_name)
-            if not baseline_step:
-                continue
+        # Create step mapping first
+        step_mapping = {}
+        for current_step, baseline_step in zip(self.step_validations, baseline.step_validations):
+            step_mapping[current_step.step_name] = baseline_step.step_name
+            if current_step.step_name != baseline_step.step_name:
+                print(f"No exact step match, using positional match")
+                print(f"Matching {baseline_step.step_name} with {current_step.step_name}")
 
-            # Compare field validations
+        # Match steps by position when names don't match
+        for current, baseline in zip(self.step_validations, baseline.step_validations):
             field_validations = []
-            for current_field in current_step.field_validations:
+            for current_field in current.field_validations:
+                # Find matching baseline field
                 baseline_field = next(
-                    (f for f in baseline_step.field_validations if f.field_name == current_field.field_name), None
+                    (f for f in baseline.field_validations if f.field_name == current_field.field_name),
+                    None
                 )
-
-                if baseline_field:
-                    # Use the strategy from config to compare values
-                    strategy = self.config.field_configs[current_field.field_name].strategy
-                    score = strategy.compare(baseline_field.current_value, current_field.current_value)
-
-                    validation = FieldValidation(
-                        field_name=current_field.field_name,
-                        baseline_value=baseline_field.current_value,  # Use the baseline's current value
-                        current_value=current_field.current_value,
-                        score=score,
-                        threshold=current_field.threshold,
-                        level=current_field.level,
-                        status=ValidationStatus.PASSED
-                        if score >= (current_field.threshold or 1.0)
-                        else ValidationStatus.FAILED,
-                        details={"compared_with": baseline.run_id},
+                
+                if not baseline_field:
+                    continue
+                    
+                print(f"Comparing field {current_field.field_name}")
+                print(f"Baseline values: {baseline_field.current_value}")
+                print(f"Current values: {current_field.current_value}")
+                
+                # Get strategy from config
+                field_config = self.config.field_configs.get(current_field.field_name)
+                if not field_config or not field_config.strategy:
+                    print(f"No strategy configured for field {current_field.field_name}, skipping")
+                    continue
+                    
+                strategy = field_config.strategy
+                score = 0.0
+                
+                # Handle different strategy types
+                if isinstance(strategy, ValidationStrategy):
+                    score = strategy.validate(
+                        predictions=current_field.current_value,
+                        annotations=baseline_field.current_value
                     )
-                    field_validations.append(validation)
-
+                elif isinstance(strategy, ComparisonStrategy):
+                    scores = []
+                    for baseline_val, current_val in zip(baseline_field.current_value, current_field.current_value):
+                        scores.append(strategy.compare(baseline_val, current_val))
+                    score = sum(scores) / len(scores) if scores else 0.0
+                else:
+                    print(f"Unknown strategy type for field {current_field.field_name}: {type(strategy)}")
+                    continue
+                
+                validation = FieldValidation(
+                    field_name=current_field.field_name,
+                    current_value=current_field.current_value,
+                    baseline_value=baseline_field.current_value,
+                    score=score,
+                    threshold=current_field.threshold,
+                    details={
+                        "baseline_step": baseline.step_name,
+                        "current_step": current.step_name,
+                        "strategy": type(strategy).__name__
+                    }
+                )
+                field_validations.append(validation)
+            
             if field_validations:
-                diff_validations.append(
-                    StepValidation(
-                        step_name=current_step.step_name,
-                        field_validations=field_validations,
-                        metadata={"compared_with": baseline.run_id},
-                        inputs=current_step.inputs,
-                        outputs=current_step.outputs,
-                    )
+                step_validation = StepValidation(
+                    step_name=current.step_name,
+                    field_validations=field_validations,
+                    metadata={
+                        "baseline_step": baseline.step_name,
+                        "current_step": current.step_name,
+                    },
+                    inputs=current.inputs,
+                    outputs=current.outputs
                 )
+                diff_validations.append(step_validation)
+                current_validations.append(current)
 
-        return RegressionResults(
-            run_id=f"diff_{self.run_id}_vs_{baseline.run_id}",
+        # Get run IDs from metadata if available, otherwise generate them
+        baseline_run_id = baseline.metadata.get("run_id", "baseline")
+        current_run_id = self.metadata.get("run_id", "current")
+        
+        # Create comparison results
+        results = RegressionResults(
+            run_id=f"diff_{current_run_id}_vs_{baseline_run_id}",
             timestamp=datetime.now(timezone.utc),
             config=self.config,
-            step_validations=diff_validations,
+            step_validations=current_validations,
             metadata={
-                "baseline_run_id": baseline.run_id,
-                "current_run_id": self.run_id,
+                "baseline_run_id": baseline_run_id,
+                "current_run_id": current_run_id,
+                "diff_validations": diff_validations,
+                "step_mapping": step_mapping
             },
         )
+        results._baseline_results = baseline
+        return results
+
+    @property
+    def baseline_results(self) -> Optional["RegressionResults[T]"]:
+        """Get the baseline results if this is a comparison."""
+        return self._baseline_results
 
     def export(self, path: str) -> None:
         """Export results to a file.
@@ -228,6 +281,14 @@ class RegressionResults(BaseModel, Generic[T]):
         """
         output_path = Path(path)
         output_path.parent.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
+
+        def serialize_value(obj: Any) -> Any:
+            """Helper to serialize Pydantic models and other objects."""
+            if isinstance(obj, BaseModel):
+                return obj.model_dump()
+            if isinstance(obj, (datetime, timezone)):
+                return obj.isoformat()
+            return obj
 
         # Convert to serializable format
         data = {
@@ -253,15 +314,15 @@ class RegressionResults(BaseModel, Generic[T]):
                             "score": v.score,
                             "threshold": v.threshold,
                             "passed": v.status == ValidationStatus.PASSED,
-                            "baseline": v.baseline_value,
-                            "current": v.current_value,
+                            "baseline": [serialize_value(x) for x in (v.baseline_value or [])],
+                            "current": [serialize_value(x) for x in v.current_value],
                             "details": v.details,
                         }
                         for v in step.field_validations
                     ],
                     "metadata": step.metadata,
-                    "inputs": step.inputs,
-                    "outputs": step.outputs,
+                    "inputs": [serialize_value(x) for x in step.inputs],
+                    "outputs": [serialize_value(x) for x in step.outputs],
                 }
                 for step in self.step_validations
             ],
@@ -295,8 +356,6 @@ class RegressionResults(BaseModel, Generic[T]):
                     current_value=v["current"],
                     score=v["score"],
                     threshold=v["threshold"],
-                    level=ValidationLevel(v.get("level", "strict")),
-                    status=ValidationStatus(v.get("status", "failed")),
                     details=v.get("details", {}),
                 )
                 for v in step["validations"]

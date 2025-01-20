@@ -1,114 +1,179 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Strux Validation Report</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .summary {
-            background-color: #f5f5f5;
-            padding: 15px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-        }
-        .status {
-            font-weight: bold;
-            color: {% if data.summary.status == "PASSED" %}#28a745{% else %}#dc3545{% endif %}
-        }
-        .plot-container {
-            margin: 20px 0;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-        }
-        .metrics {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 10px;
-            margin: 10px 0;
-        }
-        .metric {
-            background-color: #fff;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 3px;
-        }
-        .results-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-        }
-        .results-table th, .results-table td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: left;
-        }
-        .results-table th {
-            background-color: #f5f5f5;
-        }
-        .results-table tr:nth-child(even) {
-            background-color: #f9f9f9;
-        }
-    </style>
-</head>
-<body>
-    <div class="summary">
-        <h2>Validation Report</h2>
-        <p>Run ID: {{ data.summary.run_id }}</p>
-        <p>Timestamp: {{ data.summary.timestamp }}</p>
-        <p>Status: <span class="status">{{ data.summary.status }}</span></p>
-        <div class="metrics">
-            <div class="metric">
-                <strong>Total Validations:</strong> {{ data.summary.total_validations }}
-            </div>
-            <div class="metric">
-                <strong>Failed Validations:</strong> {{ data.summary.failed_validations }}
-            </div>
-        </div>
+{% extends "base.html" %}
+
+{% block content %}
+<div class="header">
+    <h1>Annotation Validation Report</h1>
+    <p>Run ID: {{ data.summary.run_id }}</p>
+    <p>Timestamp: {{ data.summary.timestamp }}</p>
+</div>
+
+<div class="summary">
+    <div class="summary-card">
+        <h3>Overall Status</h3>
+        <span class="status {% if data.summary.status == 'PASSED' %}status-passed{% else %}status-failed{% endif %}">
+            {{ data.summary.status }}
+        </span>
+    </div>
+    <div class="summary-card">
+        <h3>Total Fields</h3>
+        <p>{{ data.fields|length }}</p>
+    </div>
+    <div class="summary-card">
+        <h3>Total Samples</h3>
+        <p>{{ data.inputs|length }}</p>
+    </div>
+</div>
+
+{% for field_name, field in data.fields.items() %}
+<div class="field-section">
+    <div class="field-header">
+        <h2>{{ field_name }}</h2>
+        <span class="status {% if field.score >= field.threshold %}status-passed{% else %}status-failed{% endif %}">
+            Score: {{ "%.2f"|format(field.score) }} (threshold: {{ field.threshold }})
+        </span>
     </div>
 
-    <div class="plots">
-        {% for field_name, plot in data.plots.items() %}
-        <div class="plot-container">
-            <h3>{{ field_name }} Comparison</h3>
-            <div class="metrics">
-                <div class="metric">
-                    <strong>Score:</strong> {{ "%.2f"|format(data.fields[field_name].score) }}
-                </div>
-                <div class="metric">
-                    <strong>Threshold:</strong> {{ "%.2f"|format(data.fields[field_name].threshold) }}
-                </div>
+    <div class="metrics">
+        {% if field.details.accuracy is defined %}
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.1f"|format(field.details.accuracy * 100) }}%</div>
+            <div class="metric-label">Accuracy</div>
+        </div>
+        {% endif %}
+        {% if field.details.mae is defined %}
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.3f"|format(field.details.mae) }}</div>
+            <div class="metric-label">Mean Absolute Error</div>
+        </div>
+        {% endif %}
+        {% if field.details.rmse is defined %}
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.3f"|format(field.details.rmse) }}</div>
+            <div class="metric-label">Root Mean Square Error</div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="tab-container">
+        <div class="tab-buttons">
+            <button class="tab-button active" onclick="switchTab('plot-{{ field_name }}', this)">Visualization</button>
+            <button class="tab-button" onclick="switchTab('data-{{ field_name }}', this)">Raw Data</button>
+            <button class="tab-button" onclick="switchTab('errors-{{ field_name }}', this)">Error Analysis</button>
+        </div>
+        
+        <div id="plot-{{ field_name }}" class="tab-content active">
+            <div class="plot-container">
+                {{ field.plots[field_name] | safe if field.plots }}
             </div>
-            {{ plot | safe }}
-            
-            <h4>Detailed Results</h4>
-            <table class="results-table">
+        </div>
+        
+        <div id="data-{{ field_name }}" class="tab-content">
+            <table>
                 <thead>
                     <tr>
-                        <th>Row</th>
-                        <th>Input</th>
-                        <th>Output</th>
-                        <th>Expected</th>
+                        <th>Index</th>
+                        <th>Prediction</th>
+                        <th>Ground Truth</th>
+                        <th>Status</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for i in range(data.fields[field_name].predictions|length) %}
+                    {% for i in range(field.predictions|length) %}
                     <tr>
                         <td>{{ i + 1 }}</td>
-                        <td>{{ data.inputs[i] }}</td>
-                        <td>{{ data.fields[field_name].predictions[i] }}</td>
-                        <td>{{ data.fields[field_name].annotations[i] if data.fields[field_name].annotations else 'N/A' }}</td>
+                        <td>{{ field.predictions[i] }}</td>
+                        <td>{{ field.annotations[i] if field.annotations else '-' }}</td>
+                        <td>
+                            {% if field.annotations %}
+                                {% if field.predictions[i] == field.annotations[i] %}
+                                    <span class="status status-passed">✓</span>
+                                {% else %}
+                                    <span class="status status-failed">✗</span>
+                                {% endif %}
+                            {% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
-        {% endfor %}
+        
+        <div id="errors-{{ field_name }}" class="tab-content">
+            {% if field.annotations %}
+                <div class="error-summary">
+                    <h3>Error Distribution</h3>
+                    {% if field.details.error_distribution %}
+                        <div class="plot-container">
+                            {{ field.details.error_distribution | safe }}
+                        </div>
+                    {% endif %}
+                    
+                    {% if field.details.common_errors %}
+                        <h3>Most Common Errors</h3>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Predicted</th>
+                                    <th>Actual</th>
+                                    <th>Count</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for error in field.details.common_errors %}
+                                <tr>
+                                    <td>{{ error.predicted }}</td>
+                                    <td>{{ error.actual }}</td>
+                                    <td>{{ error.count }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% endif %}
+                </div>
+            {% else %}
+                <p>No annotation data available for error analysis.</p>
+            {% endif %}
+        </div>
     </div>
-</body>
-</html> 
+</div>
+{% endfor %}
+
+{% if data.inputs %}
+<div class="field-section">
+    <h2>Sample Inputs</h2>
+    <div class="tab-container">
+        <div class="tab-buttons">
+            <button class="tab-button active" onclick="switchTab('inputs-table', this)">Table View</button>
+            <button class="tab-button" onclick="switchTab('inputs-json', this)">JSON View</button>
+        </div>
+        
+        <div id="inputs-table" class="tab-content active">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Index</th>
+                        {% for key in data.inputs[0].keys() %}
+                        <th>{{ key }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for i, input in enumerate(data.inputs) %}
+                    <tr>
+                        <td>{{ i + 1 }}</td>
+                        {% for value in input.values() %}
+                        <td>{{ value }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <div id="inputs-json" class="tab-content">
+            <pre><code>{{ data.inputs | tojson(indent=2) }}</code></pre>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %} 
