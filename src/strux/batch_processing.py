@@ -37,6 +37,9 @@ class BatchProcessor(Generic[T]):
         """Validate outputs against configuration."""
         validations = []
         
+        # Get annotations from metadata if available
+        annotations = getattr(config.data_source, "metadata", {}).get("annotations", [])
+        
         for field_name, field_config in config.field_configs.items():
             field_values = [getattr(output, field_name) for output in outputs]
             
@@ -52,36 +55,29 @@ class BatchProcessor(Generic[T]):
                     details={"is_first_run": True}
                 )
             else:
-                # Get comparison values
-                if field_config.compare_with_annotation and config.annotation_field:
-                    expected_values = [getattr(output, config.annotation_field) for output in outputs]
+                # Get expected values from annotations if available
+                if field_config.compare_with_annotation and annotations:
+                    expected_values = [
+                        getattr(annotation, field_name) if annotation else None 
+                        for annotation in annotations
+                    ]
                 else:
-                    expected_values = field_values  # Self-comparison for non-annotated fields
+                    expected_values = field_values  # Self-comparison
                 
                 # Calculate similarity score
                 if field_config.strategy:
                     score = field_config.strategy.compare(expected_values, field_values)
                 else:
-                    # Default: exact match
                     score = float(all(exp == val for exp, val in zip(expected_values, field_values)))
-                
-                # Determine validation status
-                threshold = field_config.threshold or 1.0
-                if score >= threshold:
-                    status = ValidationStatus.PASSED
-                elif field_config.level == ValidationLevel.WARNING:
-                    status = ValidationStatus.WARNING
-                else:
-                    status = ValidationStatus.FAILED
                 
                 validation = FieldValidation(
                     field_name=field_name,
                     baseline_value=expected_values,
                     current_value=field_values,
                     score=score,
-                    threshold=threshold,
+                    threshold=field_config.threshold,
                     level=field_config.level,
-                    status=status,
+                    status=ValidationStatus.PASSED if score >= field_config.threshold else ValidationStatus.FAILED,
                     details={}
                 )
             

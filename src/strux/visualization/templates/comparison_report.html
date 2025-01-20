@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="header">
+    <h1>Model Comparison Report</h1>
+    <div class="run-info">
+        <p>Comparing runs:</p>
+        <p>Baseline: {{ data.summary.baseline_id }}</p>
+        <p>Current: {{ data.summary.run_id }}</p>
+        <p>Status: {{ data.summary.status }}</p>
+    </div>
+</div>
+
+<!-- Executive Summary -->
+<div class="executive-summary">
+    <h2>Executive Summary</h2>
+    <div class="summary-cards">
+        <div class="summary-card">
+            <h3>Overall Changes</h3>
+            <div class="metric-grid">
+                <div class="metric improved">
+                    <span class="metric-value">{{ data.changes.improvements }}</span>
+                    <span class="metric-label">Improvements 🟢</span>
+                </div>
+                <div class="metric regressed">
+                    <span class="metric-value">{{ data.changes.regressions }}</span>
+                    <span class="metric-label">Regressions 🔴</span>
+                </div>
+                <div class="metric unchanged">
+                    <span class="metric-value">{{ data.changes.unchanged }}</span>
+                    <span class="metric-label">Unchanged ⚪</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="summary-card">
+            <h3>Status</h3>
+            <span class="status status-{{ data.summary.status.lower() }}">
+                {{ data.summary.status }}
+            </span>
+        </div>
+    </div>
+</div>
+
+<!-- Per-Field Analysis -->
+{% for field_name, field in data.fields.items() %}
+<div class="field-section">
+    <h2>{{ field_name }}</h2>
+    
+    <div class="metrics">
+        <p>Improvements: {{ field.metrics.improvements }}</p>
+        <p>Unchanged: {{ field.metrics.unchanged }}</p>
+        <p>Regressions: {{ field.metrics.regressions }}</p>
+    </div>
+
+    {% if data.plots and field_name in data.plots %}
+    <div class="plot">
+        {{ data.plots[field_name] | safe }}
+    </div>
+    {% endif %}
+
+    <div class="samples">
+        <h3>Samples</h3>
+        <div class="tabs">
+            <button class="tab active" onclick="showTab(this, 'all-{{ field_name }}')">All</button>
+            <button class="tab" onclick="showTab(this, 'improved-{{ field_name }}')">Improvements</button>
+            <button class="tab" onclick="showTab(this, 'regressed-{{ field_name }}')">Regressions</button>
+        </div>
+
+        <div id="all-{{ field_name }}" class="tab-content active">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Sample</th>
+                        <th>Input</th>
+                        <th>Baseline</th>
+                        <th>Current</th>
+                        <th>Expected</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sample in field.samples %}
+                    <tr class="status-{{ sample.status }}">
+                        <td>{{ sample.index }}</td>
+                        <td>{{ sample.input }}</td>
+                        <td>{{ sample.baseline }}</td>
+                        <td>{{ sample.current }}</td>
+                        <td>{{ sample.expected }}</td>
+                        <td>
+                            {% if sample.status == 'improved' %}
+                            🟢
+                            {% elif sample.status == 'regressed' %}
+                            🔴
+                            {% else %}
+                            ⚪
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div id="improved-{{ field_name }}" class="tab-content">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Sample</th>
+                        <th>Input</th>
+                        <th>Baseline</th>
+                        <th>Current</th>
+                        <th>Expected</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sample in field.samples if sample.status == 'improved' %}
+                    <tr>
+                        <td>{{ sample.index }}</td>
+                        <td>{{ sample.input }}</td>
+                        <td>{{ sample.baseline }}</td>
+                        <td>{{ sample.current }}</td>
+                        <td>{{ sample.expected }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div id="regressed-{{ field_name }}" class="tab-content">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Sample</th>
+                        <th>Input</th>
+                        <th>Baseline</th>
+                        <th>Current</th>
+                        <th>Expected</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sample in field.samples if sample.status == 'regressed' %}
+                    <tr>
+                        <td>{{ sample.index }}</td>
+                        <td>{{ sample.input }}</td>
+                        <td>{{ sample.baseline }}</td>
+                        <td>{{ sample.current }}</td>
+                        <td>{{ sample.expected }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endfor %}
+
+<style>
+.executive-summary {
+    margin: 2rem 0;
+    padding: 2rem;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.metric-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+}
+
+.metric {
+    text-align: center;
+    padding: 1rem;
+    border-radius: 6px;
+}
+
+.metric.improved { background: #d4edda; }
+.metric.regressed { background: #f8d7da; }
+.metric.unchanged { background: #e9ecef; }
+
+.sample-row.improved { background: #d4edda33; }
+.sample-row.regressed { background: #f8d7da33; }
+
+.change-indicator {
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
+.change-indicator.improved { background: #d4edda; }
+.change-indicator.regressed { background: #f8d7da; }
+.change-indicator.unchanged { background: #e9ecef; }
+
+.field-section {
+    margin: 3rem 0;
+    padding: 2rem;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.header {
+    margin-bottom: 2rem;
+}
+
+.run-info {
+    background: #f5f5f5;
+    padding: 1rem;
+    border-radius: 4px;
+}
+
+.metrics {
+    display: flex;
+    gap: 2rem;
+    margin: 1rem 0;
+}
+
+.tabs {
+    margin: 1rem 0;
+}
+
+.tab {
+    padding: 0.5rem 1rem;
+    border: none;
+    background: #f5f5f5;
+    cursor: pointer;
+}
+
+.tab.active {
+    background: #007bff;
+    color: white;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+
+th, td {
+    padding: 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+.status-improved {
+    background-color: rgba(0, 255, 0, 0.1);
+}
+
+.status-regressed {
+    background-color: rgba(255, 0, 0, 0.1);
+}
+
+.plot {
+    margin: 2rem 0;
+}
+</style>
+
+<script>
+function showTab(button, tabId) {
+    // Remove active class from all tabs and contents
+    const parent = button.closest('.samples');
+    parent.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    parent.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+    
+    // Add active class to clicked tab and corresponding content
+    button.classList.add('active');
+    document.getElementById(tabId).classList.add('active');
+}
+</script>
+{% endblock %} 

@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Callable
-from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin, Type, List
+from typing import Any, ClassVar, Generic, TypeVar, get_args, get_origin, Type, List, Dict
 
 import pandas as pd
 import sqlalchemy
@@ -268,17 +268,76 @@ class PostgresDataSource(DataSource[T]):
 
 
 class CSVDataSource(DataSource[T]):
-    """Data source for CSV files."""
+    """Data source for CSV files with JSON column support."""
     
-    def __init__(self, df: pd.DataFrame, schema: Type[T]):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        schema: Type[T],
+        json_columns: Dict[str, type] | None = None,
+        field_transformers: Dict[str, Callable] | None = None
+    ):
         """Initialize data source.
         
         Args:
             df: Pandas DataFrame containing the data
             schema: Pydantic model class for input validation
+            json_columns: Mapping of column names to their JSON types
+            field_transformers: Optional field-specific transformations
         """
-        self._data = df  # Store DataFrame internally
+        self._data = df
         self.schema = schema
+        self.json_columns = json_columns or {}
+        self.field_transformers = field_transformers or {}
+        
+        # Process JSON columns if specified
+        if json_columns:
+            self._process_json_columns()
+    
+    def _transform_json_column(self, data: Any, target_type: type) -> Any:
+        """Transform JSON data into the target type."""
+        if data is None:
+            return None
+
+        # If data is already a dict/list, use it as is, otherwise parse JSON
+        if isinstance(data, (dict, list)):
+            json_data = data
+        else:
+            try:
+                json_data = json.loads(data)
+            except (TypeError, json.JSONDecodeError) as e:
+                raise ValueError(f"Failed to parse JSON data: {e!s}\nData: {data}")
+
+        # Handle different target types
+        origin = get_origin(target_type)
+        if origin is list:
+            # Handle List[SomeType]
+            item_type = get_args(target_type)[0]
+            if not isinstance(json_data, list):
+                raise ValueError(f"Expected list but got {type(json_data)}")
+            return [self._transform_single_value(item, item_type) for item in json_data]
+        
+        if origin is None:
+            # Handle non-generic types (dict, BaseModel, etc)
+            return self._transform_single_value(json_data, target_type)
+        
+        raise ValueError(f"Unsupported type: {target_type}")
+
+    def _transform_single_value(self, data: Any, target_type: type) -> Any:
+        """Transform a single value into the target type."""
+        if target_type == dict:
+            return data
+        if isinstance(target_type, type) and issubclass(target_type, BaseModel):
+            return target_type.model_validate(data)
+        return data
+
+    def _process_json_columns(self) -> None:
+        """Process JSON columns in the DataFrame."""
+        for col_name, target_type in self.json_columns.items():
+            if col_name in self._data.columns:
+                self._data[col_name] = self._data[col_name].apply(
+                    lambda x: self._transform_json_column(x, target_type)
+                )
     
     @property
     def data(self) -> pd.DataFrame:
@@ -286,33 +345,74 @@ class CSVDataSource(DataSource[T]):
         return self._data
     
     @classmethod
-    def from_csv(cls, schema: Type[T], file_path: str) -> 'CSVDataSource':
+    def from_csv(
+        cls,
+        schema: Type[T],
+        file_path: str,
+        json_columns: Dict[str, type] | None = None,
+        field_transformers: Dict[str, Callable] | None = None,
+        **pandas_kwargs: Any
+    ) -> 'CSVDataSource[T]':
         """Create data source from CSV file.
         
         Args:
             schema: Pydantic model class for input validation
             file_path: Path to CSV file
+            json_columns: Mapping of column names to their JSON types
+            field_transformers: Optional field-specific transformations
+            **pandas_kwargs: Additional arguments passed to pd.read_csv
             
         Returns:
             CSVDataSource instance
         """
-        df = pd.read_csv(file_path)
-        return cls(df, schema)
+        df = pd.read_csv(file_path, **pandas_kwargs)
+        return cls(
+            df=df,
+            schema=schema,
+            json_columns=json_columns,
+            field_transformers=field_transformers
+        )
     
     def get_batch(self) -> List[T]:
-        """Get all data as a batch of validated models.
-        
-        Returns:
-            List of validated input models
-        """
-        # Convert DataFrame rows to dictionaries
+        """Get all data as a batch of validated models."""
         records = self.data.to_dict('records')
+        validated_models = []
+        annotations = []
         
-        # Create validated models for each row
-        return [
-            self.schema(**{
-                k: v for k, v in record.items() 
-                if k in self.schema.model_fields
-            })
-            for record in records
-        ]
+        for record in records:
+            # Process input model
+            for col_name, col_type in self.json_columns.items():
+                if col_type == self.schema and col_name in record:
+                    if isinstance(record[col_name], self.schema):
+                        validated_models.append(record[col_name])
+                        break
+                    elif isinstance(record[col_name], dict):
+                        validated_models.append(self.schema(**record[col_name]))
+                        break
+            else:
+                model_data = {
+                    k: v for k, v in record.items() 
+                    if k in self.schema.model_fields
+                }
+                validated_models.append(self.schema(**model_data))
+            
+            # Process annotation if present
+            if "annotation" in record and record["annotation"]:
+                if isinstance(record["annotation"], dict):
+                    annotations.append(record["annotation"])
+                else:
+                    try:
+                        # Handle JSON string
+                        annotation_data = json.loads(record["annotation"])
+                        annotations.append(annotation_data)
+                    except (json.JSONDecodeError, TypeError):
+                        annotations.append(None)
+            else:
+                annotations.append(None)
+        
+        # Store annotations as metadata
+        self.metadata = {
+            "annotations": annotations
+        }
+        
+        return validated_models

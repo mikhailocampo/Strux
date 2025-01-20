@@ -4,11 +4,11 @@ from strux.configs import RegressionConfig, ValidationLevel
 from strux.data_loading import DataSource, PostgresDataSource, CSVDataSource
 from strux.pipeline import Pipeline, Sequential
 from strux.results import RegressionResults
-from strux.strategies import exact_match, numeric_range, subset
+from strux.strategies import exact_match, subset, absolute_deviation, relative_deviation
 from strux.experiment import Experiment
 from strux.visualization.report_generator import HTMLReport
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "CSVDataSource",
@@ -22,6 +22,7 @@ __all__ = [
     "Sequential",
     "ValidationLevel",
     "exact_match",
-    "numeric_range",
+    "absolute_deviation",
+    "relative_deviation",
     "subset",
 ]

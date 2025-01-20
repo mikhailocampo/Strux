@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar, List, Tuple, Type
+import warnings
 
 from pydantic import BaseModel
 
@@ -145,66 +146,112 @@ class Sequential:
     @classmethod
     def from_steps(
         cls,
-        data_source: CSVDataSource,
-        steps: List[Tuple[str, Callable, Type[BaseModel]]],
-        config: RegressionConfig
-    ) -> 'Sequential':
-        """Create pipeline from steps."""
+        data_source: DataSource[T],
+        steps: List[Tuple[str, Callable[[T], U], Type[U]]],
+        config: RegressionConfig[U],
+    ) -> 'Sequential[T, U]':
+        """Create pipeline from list of steps."""
+        # Set data source in config
+        config.data_source = data_source
+        
         return cls(
             data_source=data_source,
             config=config,
             steps=steps
         )
 
-    def _validate_batch(self, outputs: List[BaseModel]) -> List[FieldValidation]:
-        """Validate a batch of outputs."""
+    def _validate_batch(self, outputs: List[Any]) -> List[FieldValidation]:
+        """Validate a batch of outputs against annotations."""
         validations = []
         
         # Get annotation values if configured
         annotation_field = self.config.annotation_field
-        annotation_values = (
-            self.data_source.data[annotation_field].tolist()
-            if annotation_field
-            else None
-        )
+        annotations = None
+        if annotation_field and annotation_field in self.data_source.data:
+            raw_annotations = self.data_source.data[annotation_field].tolist()
+            
+            # Handle both simple values and structured JSON annotations
+            if isinstance(raw_annotations[0], self.config.target_schema):
+                # Annotations are already proper model instances (from JSON parsing)
+                annotations = raw_annotations
+            else:
+                # Convert raw values to model instances
+                annotations = [
+                    self.config.target_schema(doubled=value) 
+                    for value in raw_annotations
+                ]
+        
+        # Check if there are any configured fields
+        if not self.config.field_configs:
+            warnings.warn("No field configurations found. No validation will be performed.")
+            return validations
         
         # Validate each configured field
         for field_name, field_config in self.config.field_configs.items():
-            # Get output values for this field
-            output_values = [getattr(output, field_name) for output in outputs]
+            # Skip fields without a validation strategy
+            if not field_config or not field_config.strategy:
+                warnings.warn(f"Field '{field_name}' has no validation strategy configured. Skipping validation.")
+                continue
             
-            # Compare with annotations if configured
-            if field_config.compare_with_annotation and annotation_values:
-                score = sum(1 for a, b in zip(output_values, annotation_values) if a == b) / len(output_values)
-                baseline = annotation_values
-            else:
-                score = 1.0  # Default score if no comparison
-                baseline = None
+            # Get predicted values for this field
+            predictions = [getattr(output, field_name) for output in outputs]
+            
+            # Get annotation values for this field if available
+            baseline_values = None
+            if annotations:
+                baseline_values = [
+                    getattr(annot, field_name) 
+                    for annot in annotations
+                ]
+            
+            # Run validation strategy
+            score = field_config.strategy.validate(predictions, baseline_values)
             
             # Create validation result
-            validations.append(
-                FieldValidation(
-                    field_name=field_name,
-                    baseline_value=baseline,
-                    current_value=output_values,
-                    score=score,
-                    threshold=field_config.threshold,
-                    level=field_config.level,
-                    status=ValidationStatus.PASSED if score >= (field_config.threshold or 1.0) else ValidationStatus.FAILED,
-                    details={}
-                )
+            validation = FieldValidation(
+                field_name=field_name,
+                current_value=predictions,
+                baseline_value=baseline_values,
+                score=score,
+                threshold=field_config.threshold,
+                details={}
             )
+            validations.append(validation)
         
         return validations
 
-    def run(self) -> RegressionResults:
-        """Run the pipeline on a batch of data."""
-        # Get batch of input data
-        inputs = self.data_source.get_batch()
+    def run(self, baseline_path: str | None = None) -> RegressionResults:
+        """Run the pipeline and validate outputs.
         
-        # Process each step
-        for step_name, func, output_schema in self.steps:
-            # Process entire batch
+        Args:
+            baseline_path: Optional path to baseline results for comparison
+            
+        Returns:
+            Results of validation
+        """
+        # Get data from source
+        df = self.data_source.data
+        
+        # Get inputs and annotations from DataFrame
+        inputs = []
+        annotations = []
+        
+        for _, row in df.iterrows():
+            # Get input data
+            if isinstance(row['review'], dict):
+                inputs.append(self.steps[0][2](**row['review']))
+            else:
+                inputs.append(row['review'])
+            
+            # Get annotations if configured
+            if self.config.annotation_field:
+                if isinstance(row[self.config.annotation_field], dict):
+                    annotations.append(self.config.target_schema(**row[self.config.annotation_field]))
+                else:
+                    annotations.append(row[self.config.annotation_field])
+        
+        # Run inference
+        for step_name, func, _ in self.steps:
             outputs = [func(input_data) for input_data in inputs]
             
             # Validate outputs
@@ -212,7 +259,7 @@ class Sequential:
             
             # Create results
             results = RegressionResults(
-                run_id=f"CSVDataSource_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                run_id=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 timestamp=datetime.now(timezone.utc),
                 config=self.config,
                 step_validations=[
@@ -225,5 +272,17 @@ class Sequential:
                     )
                 ]
             )
+            
+            # Compare with baseline if provided
+            if baseline_path:
+                try:
+                    baseline = RegressionResults.load_baseline(
+                        baseline_path, 
+                        self.config.target_schema
+                    )
+                    results = results.compare_with(baseline)
+                except FileNotFoundError:
+                    # If no baseline exists, mark this as first run
+                    results.step_validations[0].metadata["is_first_run"] = True
         
         return results

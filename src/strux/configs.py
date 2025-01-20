@@ -30,6 +30,7 @@ class RegressionConfig(BaseModel, Generic[T]):
     target_schema: type[T]
     field_configs: dict[str, FieldConfig] = Field(default_factory=dict)
     annotation_field: str | None = None
+    data_source: Any = None
 
     def configure_field(
         self,
@@ -39,7 +40,7 @@ class RegressionConfig(BaseModel, Generic[T]):
         level: ValidationLevel = ValidationLevel.STRICT,
         strategy: Any = None,
         compare_with_annotation: bool = False,
-    ) -> None:
+    ) -> "RegressionConfig[T]":
         """Configure validation for a specific field."""
         if compare_with_annotation and not self.annotation_field:
             raise ValueError("Must set annotation_field in config to use compare_with_annotation")
@@ -50,3 +51,4 @@ class RegressionConfig(BaseModel, Generic[T]):
             strategy=strategy,
             compare_with_annotation=compare_with_annotation,
         )
+        return self

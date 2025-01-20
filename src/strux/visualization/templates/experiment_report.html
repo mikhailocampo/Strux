@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="header">
+    <h1>Experiment Comparison Report</h1>
+    <p>Run ID: {{ data.summary.run_id }}</p>
+    <p>Timestamp: {{ data.summary.timestamp }}</p>
+</div>
+
+<div class="summary">
+    <div class="summary-card">
+        <h3>Overall Status</h3>
+        <span class="status {% if data.summary.status == 'PASSED' %}status-passed{% else %}status-failed{% endif %}">
+            {{ data.summary.status }}
+        </span>
+    </div>
+    <div class="summary-card">
+        <h3>Total Validations</h3>
+        <p>{{ data.summary.total_validations }}</p>
+    </div>
+    <div class="summary-card">
+        <h3>Failed Validations</h3>
+        <p>{{ data.summary.failed_validations }}</p>
+    </div>
+</div>
+
+{% for field_name, field in data.fields.items() %}
+<div class="field-section">
+    <div class="field-header">
+        <h2>{{ field_name }}</h2>
+        <span class="status {% if field.score >= field.threshold %}status-passed{% else %}status-failed{% endif %}">
+            Score: {{ "%.2f"|format(field.score) }} (threshold: {{ field.threshold }})
+        </span>
+    </div>
+
+    <div class="metrics">
+        {% if field.details.mae is defined %}
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.3f"|format(field.details.mae) }}</div>
+            <div class="metric-label">Mean Absolute Error</div>
+        </div>
+        {% endif %}
+        {% if field.details.rmse is defined %}
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.3f"|format(field.details.rmse) }}</div>
+            <div class="metric-label">Root Mean Square Error</div>
+        </div>
+        {% endif %}
+        {% if field.details.agreement is defined %}
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.1f"|format(field.details.agreement * 100) }}%</div>
+            <div class="metric-label">Agreement with Baseline</div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="tab-container">
+        <div class="tab-buttons">
+            <button class="tab-button active" onclick="switchTab('plot-{{ field_name }}', this)">Visualization</button>
+            <button class="tab-button" onclick="switchTab('data-{{ field_name }}', this)">Raw Data</button>
+        </div>
+        
+        <div id="plot-{{ field_name }}" class="tab-content active">
+            <div class="plot-container">
+                {{ field.plots[field_name] | safe if field.plots }}
+            </div>
+        </div>
+        
+        <div id="data-{{ field_name }}" class="tab-content">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Index</th>
+                        <th>Current</th>
+                        <th>Baseline</th>
+                        <th>Difference</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for i in range(field.predictions|length) %}
+                    <tr>
+                        <td>{{ i + 1 }}</td>
+                        <td>{{ field.predictions[i] }}</td>
+                        <td>{{ field.annotations[i] if field.annotations else '-' }}</td>
+                        <td>
+                            {% if field.annotations %}
+                                {% if field.predictions[i] != field.annotations[i] %}
+                                    <span style="color: red">≠</span>
+                                {% else %}
+                                    <span style="color: green">=</span>
+                                {% endif %}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endfor %}
+{% endblock %} 

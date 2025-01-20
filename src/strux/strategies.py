@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TypeVar, get_origin
+from typing import TypeVar, get_origin, Any, List, Optional, Tuple, Dict
 
 T = TypeVar("T")
 Number = int | float
@@ -29,58 +29,90 @@ class ComparisonStrategy(ABC):
         """Validate the strategy against a field type."""
 
 
-class ExactMatch(ComparisonStrategy):
-    """Strategy requiring exact matches.
-
-    Use this for fields where values must match exactly like enums,
-    identifiers, or categorical values.
-
-    Example:
-        >>> config.configure_field("status", strategy=exact_match())
-
-    """
-
-    def compare(self, baseline: Number | Collection, current: Number | Collection) -> float:
-        """Compare values for exact equality.
-
+class ValidationStrategy(ABC):
+    """Base class for validation strategies."""
+    
+    @abstractmethod
+    def validate(self, predictions: List[Any], annotations: Optional[List[Any]] = None) -> float:
+        """Validate predictions against annotations.
+        
+        Args:
+            predictions: List of predicted values
+            annotations: Optional list of annotation values
+            
         Returns:
-            1.0 if values are exactly equal, 0.0 otherwise.
-
+            float: Score between 0 and 1
         """
-        return 1.0 if baseline == current else 0.0
-
-    def validate(self, field_type: type) -> bool:
-        """Can be used with any type."""
-        return bool(field_type)
+        pass
 
 
-class NumericRange(ComparisonStrategy):
-    """Strategy for comparing numeric values within a tolerance range.
+class ExactMatch(ValidationStrategy):
+    """Strategy for exact matching of values."""
+    
+    def validate(self, predictions: List[Any], annotations: Optional[List[Any]] = None) -> float:
+        """Validate exact matches between predictions and annotations.
+        
+        Args:
+            predictions: List of predicted values
+            annotations: List of expected values
+            
+        Returns:
+            float: Percentage of exact matches (0-1)
+        """
+        if not annotations:
+            return 0.0
+            
+        matches = sum(1 for p, a in zip(predictions, annotations) if p == a)
+        return matches / len(predictions)
 
-    Args:
-        tolerance: Maximum allowed deviation as a fraction (0.1 = 10%)
 
+class AbsoluteDeviation(ValidationStrategy):
+    """Strategy for comparing values within a fixed ±threshold.
+    
     Example:
         >>> config.configure_field(
                 "price",
-                strategy=numeric_range(tolerance=0.1)
+                strategy=absolute_deviation(50000),  # Allow ±$50k difference
+                threshold=0.9  # 90% must be within threshold
             )
+    """
+    
+    def __init__(self, threshold: float):
+        self.threshold = threshold
+    
+    def validate(self, predictions: List[float], annotations: Optional[List[float]] = None) -> float:
+        """Validate numeric predictions are within threshold of annotations.
+        
+        Args:
+            predictions: List of predicted values
+            annotations: List of expected values
+            
+        Returns:
+            float: Percentage within threshold (0-1)
+        """
+        if not annotations:
+            return 0.0
+            
+        within_threshold = sum(
+            1 for p, a in zip(predictions, annotations)
+            if abs(p - a) <= self.threshold
+        )
+        return within_threshold / len(predictions)
 
+
+class RelativeDeviation(ComparisonStrategy):
+    """Strategy for comparing values within a relative percentage difference.
+    
+    Example:
+        >>> config.configure_field(
+                "price",
+                strategy=relative_deviation(0.1),  # Allow ±10% difference
+                threshold=0.9
+            )
     """
 
-    def __init__(self, tolerance: float = 0.1) -> None:
-        """Initialize with a tolerance value between 0 and 1.
-
-        Args:
-            tolerance: Maximum allowed deviation as a fraction (0.1 = 10%)
-
-        Raises:
-            ValueError: If tolerance is not between 0 and 1.
-
-        """
-        if not 0 < tolerance <= 1:
-            raise ValueError(TOLERANCE_ERROR_MSG)
-        self.tolerance = tolerance
+    def __init__(self, percentage: float):
+        self.percentage = percentage
 
     def compare(self, baseline: Number | None, current: Number) -> float:
         """Compare numberic values within a tolerance range.
@@ -94,7 +126,7 @@ class NumericRange(ComparisonStrategy):
         if baseline == 0:
             return 1.0 if current == 0 else 0.0
         diff = abs(baseline - current) / abs(baseline)
-        return max(0.0, 1.0 - (diff / self.tolerance))
+        return max(0.0, 1.0 - (diff / self.percentage))
 
     def validate(self, field_type: type) -> bool:
         """Can be used with int or float."""
@@ -161,14 +193,14 @@ def exact_match() -> ExactMatch:
     return ExactMatch()
 
 
-def numeric_range(tolerance: float = 0.1) -> NumericRange:
-    """Create a numeric range strategy.
+def absolute_deviation(threshold: float) -> AbsoluteDeviation:
+    """Create strategy that checks if values are within fixed ±threshold."""
+    return AbsoluteDeviation(threshold)
 
-    Args:
-        tolerance: Maximum allowed deviation as a fraction (0.1 = 10%)
 
-    """
-    return NumericRange(tolerance=tolerance)
+def relative_deviation(percentage: float) -> RelativeDeviation:
+    """Create strategy that checks if values are within ±percentage difference."""
+    return RelativeDeviation(percentage)
 
 
 def subset(threshold: float = 0.8) -> SubsetMatch:
