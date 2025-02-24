@@ -125,15 +125,15 @@ class Pipeline(ABC, Generic[T]):
 
 class Sequential:
     """Sequential pipeline for processing and validating data."""
-    
+
     def __init__(
         self,
         data_source: CSVDataSource,
         config: RegressionConfig,
-        steps: List[Tuple[str, Callable, Type[BaseModel]]] | None = None
+        steps: List[Tuple[str, Callable, Type[BaseModel]]] | None = None,
     ):
         """Initialize pipeline.
-        
+
         Args:
             data_source: Source of input data
             config: Configuration for validation
@@ -149,64 +149,54 @@ class Sequential:
         data_source: DataSource[T],
         steps: List[Tuple[str, Callable[[T], U], Type[U]]],
         config: RegressionConfig[U],
-    ) -> 'Sequential[T, U]':
+    ) -> "Sequential[T, U]":
         """Create pipeline from list of steps."""
         # Set data source in config
         config.data_source = data_source
-        
-        return cls(
-            data_source=data_source,
-            config=config,
-            steps=steps
-        )
+
+        return cls(data_source=data_source, config=config, steps=steps)
 
     def _validate_batch(self, outputs: List[Any]) -> List[FieldValidation]:
         """Validate a batch of outputs against annotations."""
         validations = []
-        
+
         # Get annotation values if configured
         annotation_field = self.config.annotation_field
         annotations = None
         if annotation_field and annotation_field in self.data_source.data:
             raw_annotations = self.data_source.data[annotation_field].tolist()
-            
+
             # Handle both simple values and structured JSON annotations
             if isinstance(raw_annotations[0], self.config.target_schema):
                 # Annotations are already proper model instances (from JSON parsing)
                 annotations = raw_annotations
             else:
                 # Convert raw values to model instances
-                annotations = [
-                    self.config.target_schema(doubled=value) 
-                    for value in raw_annotations
-                ]
-        
+                annotations = [self.config.target_schema(doubled=value) for value in raw_annotations]
+
         # Check if there are any configured fields
         if not self.config.field_configs:
             warnings.warn("No field configurations found. No validation will be performed.")
             return validations
-        
+
         # Validate each configured field
         for field_name, field_config in self.config.field_configs.items():
             # Skip fields without a validation strategy
             if not field_config or not field_config.strategy:
                 warnings.warn(f"Field '{field_name}' has no validation strategy configured. Skipping validation.")
                 continue
-            
+
             # Get predicted values for this field
             predictions = [getattr(output, field_name) for output in outputs]
-            
+
             # Get annotation values for this field if available
             baseline_values = None
             if annotations:
-                baseline_values = [
-                    getattr(annot, field_name) 
-                    for annot in annotations
-                ]
-            
+                baseline_values = [getattr(annot, field_name) for annot in annotations]
+
             # Run validation strategy
             score = field_config.strategy.validate(predictions, baseline_values)
-            
+
             # Create validation result
             validation = FieldValidation(
                 field_name=field_name,
@@ -214,49 +204,49 @@ class Sequential:
                 baseline_value=baseline_values,
                 score=score,
                 threshold=field_config.threshold,
-                details={}
+                details={},
             )
             validations.append(validation)
-        
+
         return validations
 
     def run(self, baseline_path: str | None = None) -> RegressionResults:
         """Run the pipeline and validate outputs.
-        
+
         Args:
             baseline_path: Optional path to baseline results for comparison
-            
+
         Returns:
             Results of validation
         """
         # Get data from source
         df = self.data_source.data
-        
+
         # Get inputs and annotations from DataFrame
         inputs = []
         annotations = []
-        
+
         for _, row in df.iterrows():
             # Get input data
-            if isinstance(row['review'], dict):
-                inputs.append(self.steps[0][2](**row['review']))
+            if isinstance(row["review"], dict):
+                inputs.append(self.steps[0][2](**row["review"]))
             else:
-                inputs.append(row['review'])
-            
+                inputs.append(row["review"])
+
             # Get annotations if configured
             if self.config.annotation_field:
                 if isinstance(row[self.config.annotation_field], dict):
                     annotations.append(self.config.target_schema(**row[self.config.annotation_field]))
                 else:
                     annotations.append(row[self.config.annotation_field])
-        
+
         # Run inference
         for step_name, func, _ in self.steps:
             outputs = [func(input_data) for input_data in inputs]
-            
+
             # Validate outputs
             validations = self._validate_batch(outputs)
-            
+
             # Create results
             results = RegressionResults(
                 run_id=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
@@ -264,25 +254,18 @@ class Sequential:
                 config=self.config,
                 step_validations=[
                     StepValidation(
-                        step_name=step_name,
-                        field_validations=validations,
-                        metadata={},
-                        inputs=inputs,
-                        outputs=outputs
+                        step_name=step_name, field_validations=validations, metadata={}, inputs=inputs, outputs=outputs
                     )
-                ]
+                ],
             )
-            
+
             # Compare with baseline if provided
             if baseline_path:
                 try:
-                    baseline = RegressionResults.load_baseline(
-                        baseline_path, 
-                        self.config.target_schema
-                    )
+                    baseline = RegressionResults.load_baseline(baseline_path, self.config.target_schema)
                     results = results.compare_with(baseline)
                 except FileNotFoundError:
                     # If no baseline exists, mark this as first run
                     results.step_validations[0].metadata["is_first_run"] = True
-        
+
         return results

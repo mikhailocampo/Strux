@@ -31,15 +31,15 @@ class ComparisonStrategy(ABC):
 
 class ValidationStrategy(ABC):
     """Base class for validation strategies."""
-    
+
     @abstractmethod
     def validate(self, predictions: List[Any], annotations: Optional[List[Any]] = None) -> float:
         """Validate predictions against annotations.
-        
+
         Args:
             predictions: List of predicted values
             annotations: Optional list of annotation values
-            
+
         Returns:
             float: Score between 0 and 1
         """
@@ -48,27 +48,27 @@ class ValidationStrategy(ABC):
 
 class ExactMatch(ValidationStrategy):
     """Strategy for exact matching of values."""
-    
+
     def validate(self, predictions: List[Any], annotations: Optional[List[Any]] = None) -> float:
         """Validate exact matches between predictions and annotations.
-        
+
         Args:
             predictions: List of predicted values
             annotations: List of expected values
-            
+
         Returns:
             float: Percentage of exact matches (0-1)
         """
         if not annotations:
             return 0.0
-            
+
         matches = sum(1 for p, a in zip(predictions, annotations) if p == a)
         return matches / len(predictions)
 
 
 class AbsoluteDeviation(ValidationStrategy):
     """Strategy for comparing values within a fixed ±threshold.
-    
+
     Example:
         >>> config.configure_field(
                 "price",
@@ -76,33 +76,30 @@ class AbsoluteDeviation(ValidationStrategy):
                 threshold=0.9  # 90% must be within threshold
             )
     """
-    
+
     def __init__(self, threshold: float):
         self.threshold = threshold
-    
+
     def validate(self, predictions: List[float], annotations: Optional[List[float]] = None) -> float:
         """Validate numeric predictions are within threshold of annotations.
-        
+
         Args:
             predictions: List of predicted values
             annotations: List of expected values
-            
+
         Returns:
             float: Percentage within threshold (0-1)
         """
         if not annotations:
             return 0.0
-            
-        within_threshold = sum(
-            1 for p, a in zip(predictions, annotations)
-            if abs(p - a) <= self.threshold
-        )
+
+        within_threshold = sum(1 for p, a in zip(predictions, annotations) if abs(p - a) <= self.threshold)
         return within_threshold / len(predictions)
 
 
 class RelativeDeviation(ComparisonStrategy):
     """Strategy for comparing values within a relative percentage difference.
-    
+
     Example:
         >>> config.configure_field(
                 "price",
